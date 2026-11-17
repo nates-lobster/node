@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Node WebOS</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml" />
+<style>
+  :root { color-scheme: dark; --accent: #2bfbae; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: #070c0e radial-gradient(1200px 700px at 50% -10%, rgba(43,251,174,.10), transparent 60%);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #e6f4ef;
+  }
+  #frame { border: 0; width: 100%; height: 100%; display: none; background: #070c0e; }
+  body.has-frame #frame { display: block; }
+  body.has-frame #local { display: none; }
+
+  /* ---------- local minimal mode ---------- */
+  #local {
+    height: 100%; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 26px; padding: 40px 24px; text-align: center;
+  }
+  #clock { font-size: clamp(56px, 11vw, 132px); font-weight: 700; letter-spacing: -0.04em; line-height: 1; font-variant-numeric: tabular-nums; }
+  #date { font-size: 15px; color: #7f9c93; letter-spacing: .02em; }
+  #greet { color: var(--accent); font-weight: 600; font-size: 15px; }
+  .card {
+    width: min(680px, 100%); border: 1px solid rgba(255,255,255,.09);
+    background: rgba(255,255,255,.035); border-radius: 18px; padding: 14px 16px; text-align: left;
+  }
+  .card h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: #6f8d84; font-weight: 700; }
+  .row { display: flex; align-items: center; gap: 9px; padding: 5px 0; font-size: 13.5px; border-top: 1px solid rgba(255,255,255,.05); }
+  .row:first-of-type { border-top: 0; }
+  .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); flex: none; }
+  .dot.warn { background: #fbbf24; }
+  .dot.hot { background: #fb7185; }
+  .muted { color: #6f8d84; }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: rgba(255,255,255,.08); color: #9fb8b0; margin-left: auto; flex: none; }
+  #quick { width: min(680px, 100%); display: flex; gap: 8px; }
+  #quick input {
+    flex: 1; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10);
+    border-radius: 12px; padding: 11px 14px; color: inherit; font: inherit; font-size: 14px; outline: none;
+  }
+  #quick input:focus { border-color: rgba(43,251,174,.55); box-shadow: 0 0 0 3px rgba(43,251,174,.12); }
+  #quick button {
+    background: var(--accent); color: #04120d; border: 0; border-radius: 12px;
+    padding: 0 18px; font-weight: 700; font-size: 13px; cursor: pointer;
+  }
+  #hint { font-size: 11.5px; color: #5d7a72; min-height: 16px; }
+  #toolbar { position: fixed; top: 14px; right: 16px; display: flex; gap: 8px; }
+  #toolbar button {
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09); color: #9fb8b0;
+    border-radius: 10px; padding: 6px 10px; font-size: 11.5px; cursor: pointer; font-family: inherit;
+  }
+  #toolbar button:hover { color: var(--accent); border-color: rgba(43,251,174,.40); }
+  #mode-chip {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; color: #5d7a72; letter-spacing: .04em;
+  }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <button id="btn-dash" title="Open the full dashboard">Dashboard</button>
+  <button id="btn-focus" title="Cycle minimal modes">Mode</button>
+  <button id="btn-options" title="Extension options">Settings</button>
+</div>
+
+<iframe id="frame" title="Node WebOS" allow="clipboard-read; clipboard-write"></iframe>
+
+<div id="local">
+  <div style="display:flex;flex-direction:column;gap:6px;align-items:center">
+    <div id="clock">--:--</div>
+    <div id="date"></div>
+    <div id="greet"></div>
+  </div>
+
+  <form id="quick" autocomplete="off">
+    <input id="quick-input" placeholder="Add a task or event… (e.g. band practice friday 4pm)" />
+    <button type="submit">Add</button>
+  </form>
+  <div id="hint"></div>
+
+  <div class="card" id="card-tasks">
+    <h3>To do</h3>
+    <div id="tasks"><div class="row muted">Loading…</div></div>
+  </div>
+
+  <div class="card" id="card-urgent">
+    <h3>Urgent</h3>
+    <div id="urgent"><div class="row muted">Loading…</div></div>
+  </div>
+</div>
+
+<div id="mode-chip"></div>
+
+<script src="newtab.js"></script>
+</body>
+</html>

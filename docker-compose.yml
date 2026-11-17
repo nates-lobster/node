@@ -1,0 +1,124 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Module A: Node Backend + Auth Gate + SQLite + AI Agent + Browser Streamer
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hub-backend
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    environment:
+      TZ: ${TZ:-America/New_York}
+      LOCAL_TIMEZONE: ${TZ:-America/New_York}
+      DATABASE_URL: sqlite:////data/hub.db
+      AI_MEMORY_PATH: /data/ai_memory.md
+      AI_NOTES_PATH: /data/ai_notes.md
+      AI_SHARED_LOG_PATH: /data/ai_shared_log.md
+      AI_PROVIDERS_PATH: /data/ai_providers.json
+      AI_NOTEBOOK_DIR: /data/notebook
+      UPLOADS_DIR: /data/uploads
+      EXTENSIONS_DIR: /data/extensions
+      DESKTOP_WIDGETS_PATH: /data/desktop_widgets.json
+      DOCS_DIR: /docs
+      FOCUS_GUARD_PATH: /data/focus_guard.json
+      AUTH_CREDENTIALS_PATH: /data/auth_credentials.json
+      AUTH_GUARD_TOKEN_PATH: /data/guard_token.secret
+      NODE_AUTH_ENABLED: ${NODE_AUTH_ENABLED:-true}
+      NODE_AUTH_USERNAME: ${NODE_AUTH_USERNAME:-admin}
+      NODE_AUTH_PASSWORD: ${NODE_AUTH_PASSWORD:-changeme}
+      NODE_AUTH_PASSWORD_HASH: ${NODE_AUTH_PASSWORD_HASH:-}
+      NODE_AUTH_SESSION_DAYS: ${NODE_AUTH_SESSION_DAYS:-7}
+      APPS_CONFIG_PATH: /config/apps_config.yaml
+      BROWSER_PROFILE_DIR: /data/browser_profile
+      BROWSER_PROFILES_ROOT: /data/browser_profiles
+      SCRAPER_STATE_PATH: /data/state/scraper_state.json
+      IMPORTANCE_LEARNER_PATH: /data/importance_learner.json
+      OS_SETTINGS_PATH: /data/os_settings.json
+      OS_PRESETS_PATH: /data/os_presets.json
+      SCHEDULE_SETTINGS_PATH: /data/schedule_settings.json
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-auto}
+      OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-auto}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      SEARXNG_URL: ${SEARXNG_URL:-}
+      VON_BASE_URL: ${VON_BASE_URL:-}
+      VON_API_KEY: ${VON_API_KEY:-}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-4096}
+      OLLAMA_NUM_THREADS: ${OLLAMA_NUM_THREADS:-4}
+      OLLAMA_ENABLE_THINKING: ${OLLAMA_ENABLE_THINKING:-true}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-false}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/sqlite:/data
+      - ./data/browser_profile:/data/browser_profile
+      - ./data/scraper_state:/data/state
+      - ./scrapers/apps_config.yaml:/config/apps_config.yaml
+      - ./dashboard/wallpapers:/dashboard/wallpapers:ro
+      - ./docs:/docs:ro
+      - ${TAILSCALE_SOCK_DIR:-./data/tailscale_sock}:/host_tailscale:ro
+    ports:
+      - "${BACKEND_BIND_IP:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
+    networks:
+      - hub_internal
+    mem_limit: 4g
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v1/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Module B: Node Lock Screen + WebSocket & API Reverse Proxy (Cloudflare Ready)
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: hub-dashboard
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${BIND_IP:-0.0.0.0}:${DASHBOARD_PORT:-8080}:80"
+    networks:
+      - hub_internal
+    mem_limit: 192m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Optional Module C: Von System One Decision Engine (OpenVINO CPU, /v1/systemone)
+  # Enable with: VON_BASE_URL=http://von:8000 docker compose --profile von up -d
+  # ---------------------------------------------------------------------------
+  von:
+    image: ghcr.io/wfzyx/von:cpu
+    container_name: hub-von
+    profiles: ["von"]
+    restart: unless-stopped
+    environment:
+      HF_HOME: /data/huggingface
+      VON_DEVICE: auto
+    volumes:
+      - ./data/von_hf:/data/huggingface
+    networks:
+      - hub_internal
+    mem_limit: 4g
+
+networks:
+  hub_internal:
+    driver: bridge
+    name: node_hub_internal

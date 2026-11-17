@@ -1,0 +1,284 @@
+# AGENT.md — Start Here
+
+You are picking up **Node**, a self-hosted personal WebOS. This file is written
+for an AI agent with **no prior context**. Read it fully before touching code.
+It tells you what the project is, what you may and may not touch, how to verify
+your work, and where the deeper docs live.
+
+- **Version:** 0.11.0
+- **Human:** one person (their host is `max@athlon`). You are their maintainer.
+- **Language of the product:** English. Code, comments and commits: English.
+- **Read next:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (map + data model),
+  [`docs/V10_2_STRUCTURAL_PASS.md`](docs/V10_2_STRUCTURAL_PASS.md) (why the recent
+  release is shaped the way it is).
+
+---
+
+## 1. What this thing is
+
+A single-user personal operating system that runs as a web app on a home server.
+It does five jobs:
+
+1. **Desktop shell** — tiling/floating windows, resizable widgets, themes, a Start
+   menu, a lock screen. Alpine.js + Tailwind in one HTML shell, no build step.
+2. **Inbox** — a real mail client over notifications scraped from web apps
+   (Gmail/Proton, LMS portals, messaging). Tag-first, Gmail query syntax.
+3. **Grades** — multi-LMS aggregation (PowerSchool, Schoology, Canvas, Classroom),
+   with user-defined course groups.
+4. **Calendar + Tasks** — a local calendar, plus task sync from calendar and inbox.
+5. **AI** — a 24/7 secretary that can perform *any* OS action through ~36 tools,
+   backed by local/remote Ollama, cloud providers, and a small decision model.
+
+Everything is **server-side**. Closing the browser never cancels an AI job.
+
+---
+
+## 2. Architecture in one picture
+
+```
+                     ┌───────────────────────────────────────────────┐
+  Brave/Chromium ───►│  FastAPI  (backend/app/main.py)               │
+  (WebOS shell,      │   • auth gate (lock screen, zero-leak)        │
+   Alpine.js)        │   • ~150 REST routes  /api/v1/*               │
+                     │   • WebSocket stream for app windows          │
+                     └───────────────┬───────────────────────────────┘
+                                     │
+        ┌────────────────┬───────────┼────────────┬─────────────────┐
+        ▼                ▼           ▼            ▼                 ▼
+   SQLite hub.db    secretary.py  model_router  browser_stream   api_bridge
+   (single file)    36 AI tools   decision gate  Playwright tabs  api-anything
+                                   (d1-2B)                        (learned APIs)
+```
+
+- **One process.** `uvicorn app.main:app`. No Celery, no Redis, no message bus.
+- **One database.** SQLite at `data/hub.db`. Schema is created/migrated in
+  `database.py` on boot (idempotent `ALTER TABLE` + index + seed block).
+- **No frontend build step.** `ui/os_app.js` and `ui/os_shell.html` are served
+  directly. Editing them and reloading is the whole loop.
+
+---
+
+## 3. The five rules that matter most
+
+These were chosen deliberately by the human. Breaking them is a regression even
+if the tests pass.
+
+### 3.1 Code is tracked, data is not — never blur the line
+`data/` holds the SQLite DB, credentials, uploaded files, and browser cookie
+profiles. It is gitignored **and** mounted outside the container's code path.
+**Never** commit anything from `data/`, never hardcode a path into it, and never
+write runtime state to a tracked file. Every runtime path is derived from
+`settings.*_path` (see `backend/app/config.py`) — use those, don't invent paths.
+
+### 3.2 Zero preinstalled apps
+`scrapers/apps_config.yaml` ships `apps: []`. Users install from the App Library
+or add a custom URL. Never seed demo apps, demo grades, demo notifications, or
+fake data. `SEED_DEMO_DATA` must stay `false` in production.
+
+### 3.3 All AI runs server-side
+Prompts execute inside a detached `asyncio` task persisted as an `AIJob`. A
+client disconnect must never abort generation. If you add an AI feature, route it
+through the job queue, not a request-scoped coroutine.
+
+### 3.4 One instructions surface
+There is exactly one `AI Instructions` section (composable markdown files). It is
+never called "Notebook". No time estimates in that window.
+
+### 3.5 The human's corrections win
+If the user tags something by hand (`tag_corrected_by_user`), no AI pass, re-scan
+or model fallback may overwrite it. This rule was learned the hard way — see
+§7.3.
+
+---
+
+## 4. How to run and verify
+
+### 4.1 Local (this sandbox or any Linux box)
+
+```bash
+pip install -r backend/requirements.txt
+PYTHONPATH=backend python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8080
+```
+
+Open `http://localhost:8080`. Default login comes from `NODE_AUTH_USERNAME` /
+`NODE_AUTH_PASSWORD` (defaults `admin` / `changeme` — the human must change this
+on a real deployment). In this sandbox it is `admin` / `changeme`.
+
+The convenience launcher `start_preview.sh` installs deps, installs Brave if
+missing, and execs uvicorn. It is sandbox tooling, not the production entrypoint.
+
+### 4.2 Production (Docker Compose / Dockge)
+
+```bash
+cp .env.example .env      # then edit: credentials, TZ, ports
+docker compose up -d --build
+```
+
+`docker-compose.yml` mounts `./data/*` from the host. That is the whole
+persistence story: **redeploy the code, keep `data/`.**
+
+### 4.3 Tests — run this before you claim anything works
+
+```bash
+cd /home/user && PYTHONPATH=/home/user/backend python3 -m pytest backend/tests/test_api.py -q
+```
+
+**Expected: 45 passed** (~30 s). If you add a feature, add a test. The suite is a
+single file by design; it uses a temp dir per run and env-var overrides, so it
+never touches the real DB. Do not "fix" a failing test by weakening it — three
+of the failures found this way were real product bugs (see §7).
+
+Some tests need Playwright + a browser:
+
+```bash
+python3 -m playwright install chromium
+sudo python3 -m playwright install-deps chromium
+```
+
+---
+
+## 5. Codebase map (where to look)
+
+All paths relative to repo root.
+
+| Area | File | Notes |
+|---|---|---|
+| HTTP routes | `backend/app/main.py` | ~150 endpoints. Huge but flat; search by `@app.` |
+| AI agent (tools) | `backend/app/secretary.py` | `SECRETARY_TOOLS` = 36 tools; `stream_chat`, tool executors |
+| Decision model | `backend/app/decision_gate.py` | d1-2B client, `tag_notification`, `plan_tools` |
+| Model routing | `backend/app/model_router.py` | pick model, notification pipeline, fallbacks |
+| Browser tabs | `backend/app/browser_stream.py` | Playwright managers, ping ingest, AI pass, dedupe |
+| Inbox tags/DSL | `backend/app/inbox_tags.py` | registry, Gmail parser, learning, filters |
+| Inbox harvest/dedupe | `backend/app/inbox_harvest.py` | body extraction, `merge_duplicate_notifications` |
+| Grades | `backend/app/grades_service.py`, `grades_control.py` | dashboards, visibility, groups |
+| Learned APIs | `backend/app/api_bridge.py` | api-anything client, cookie import |
+| Tasks sync | `backend/app/task_intelligence.py` | calendar+inbox → tasks |
+| Settings | `backend/app/os_settings.py` | 100+ keys, `sanitize_patch` whitelist |
+| Schema | `backend/app/models.py`, `database.py` | SQLModel tables + boot migrations |
+| UI | `backend/app/ui/os_shell.html`, `os_app.js` | shell markup (Alpine `x-show` views) + methods/state |
+| Extension | `extension/` | MV3, served as a zip by the server |
+
+### 5.1 UI conventions
+- Views are `<section x-show="win.view === '<name>'">` blocks inside
+  `os_shell.html`. State + methods live in the single Alpine component in
+  `os_app.js`.
+- **Server-side filters need a matching client-side getter** (e.g. the Gmail query
+  parser exists in both `inbox_tags.py` and as `matchesInboxQuery` in JS) so
+  typing filters instantly.
+- Styling is Tailwind + custom classes (`studio-card`, `studio-subcard`,
+  `badge-accent`, `win-tool-btn`). Accent is `#2bfbae` on dark slate. Icons are
+  inline SVG via `nodeSvg(name, size)`, stroke width `1.8`.
+
+---
+
+## 6. Data model (the tables you'll actually touch)
+
+| Table | Meaning |
+|---|---|
+| `Notification` | One scraped message. Key v0.11 columns: `tags_csv`, `sender`, `body_text`, `dedupe_key`, `merged_count`, `starred`, `folder`, `tag_confidence`, `tag_engine`, `tag_corrected_by_user` |
+| `CourseGrade` | One course from one LMS |
+| `CourseVisibility` | Per-course user intent: `hidden`, `tracked`, `counts_toward_gpa`, `tab_id` |
+| `GradeTab` | A user-defined course group ("monitor") |
+| `InboxLearningHint` | A correction, exportable as fine-tuning data |
+| `CalendarEvent`, `Task`, `Goal` | Self-evident |
+| `AIJob` | Detached server-side AI run |
+| `AuthSession`, `MonitoredApp`, `AgentLog`… | See `docs/ARCHITECTURE.md` |
+
+Migrations: append an idempotent block to `database.py` (create table, `ALTER
+TABLE ... ADD COLUMN` guarded by a column check, index, seed). Never destructively
+migrate a user's existing `hub.db`.
+
+---
+
+## 7. Hard-won knowledge — do not re-learn these
+
+### 7.1 Sandbox / environment
+- Playwright browsers and Brave are **not** in the snapshot; reinstall after any
+  environment reset.
+- The container clock can differ from the human's wall clock. Tests that depend on
+  "now" must pin time through settings, not assume it.
+
+### 7.2 Test isolation trap (cost hours)
+`inbox_tags.py` used to bind file paths at import time, so a module-level
+singleton leaked real user state (`data/inbox_*.json`) into the test DB and broke
+rename with a confusing `400 Tag not found`. Fix: paths resolve lazily through
+`_ensure_paths()` keyed on `settings.database_url`. **Never reintroduce
+import-time path binding.** If tests act strangely, `rm -f data/inbox_*.json`.
+
+### 7.3 User corrections were being silently undone
+The AI notification pass overwrote `tags_csv` on every sweep, reverting hand-made
+tags. Fixed with the `tag_corrected_by_user` guard in
+`browser_stream.process_notifications_with_ai`. If you add another write path to
+notifications, honour that flag.
+
+### 7.4 A reusable tool executor cannot `await`
+`execute_secretary_tool` is sync. Async service calls must go in
+`execute_secretary_tool_async`. Putting an `await` in the sync one is a
+`SyntaxError` at import.
+
+### 7.5 Settings silently drop unknown types
+`os_settings.sanitize_patch` only accepts declared keys; a `"type": "string"` that
+the sanitizer doesn't understand is discarded without error. Use the declared
+types (`enum` + `options`, `bool`, `int`, `range`) and verify the round-trip.
+
+### 7.6 `.ics` past-date blind spot
+`parse_ics_content` drops events older than 14 days *before* they reach the DB, so
+a fixture with fixed dates silently stops working weeks later. **Always use
+relative dates in calendar fixtures.**
+
+### 7.7 External API contracts (verified, don't guess)
+- **Liquid d1**: `POST {base}/v1/systemone` with `state` + `questions` (TypeSafe
+  System One). Hosted model alias is `d1.2`. Docs: `docs.liquid.ai/api/guides/decisions`.
+- **api-anything REST**: `POST /v1/call/{site}/{op}` with body
+  `{"args": {...}}` — arguments **nest under `args`**. OpenAPI at `/openapi.json`,
+  auth `Authorization: Bearer $API_ANYTHING_TOKEN`. Needs Node ≥ 22.13.
+- **Ollama**: `/api/tags`, `/api/ps`, and think/tools retries.
+- **PowerSchool / Schoology / Canvas**: contracts are documented inline in
+  `lms_connector.py`.
+
+---
+
+## 8. Definition of done
+
+Before you report a change as complete:
+
+1. `pytest backend/tests/test_api.py -q` → **45+ passed**, 0 failed.
+2. `python3 -c "import app.main"` with `PYTHONPATH=backend` imports cleanly.
+3. `node --check backend/app/ui/os_app.js` (and any extension JS) passes.
+4. If you touched UI, load it in a browser: no console errors, no `pageerror`.
+5. If you touched UI or the extension, run against a **real browser**, not just
+   the DOM string.
+6. No new file under `data/`, no new hardcoded absolute path, no secret committed.
+7. You updated the relevant doc — a feature that isn't documented is half-built.
+
+---
+
+## 9. Git workflow (the human pulls, you push)
+
+The human manages the repo; you make commits. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+for the exact first-commit and update commands.
+
+Branch and commit style used in this repo:
+
+```
+feat(inbox): merge duplicates across mismatched senders
+fix(grades): keep hidden courses hidden across re-scan
+docs: add agent handoff
+chore: bump to v0.11.0
+```
+
+Rules:
+- One logical change per commit. Update the version in **one** place per release
+  (`config.py`, `main.py` FastAPI version, `extension/manifest.json`) plus README.
+- Update `CHANGELOG.md` for anything user-visible.
+- Never force-push. Never commit `data/` or `.env`.
+- If a change needs a manual server step (new env var, Node upgrade, a migration
+  the user must run), say so explicitly in the commit body **and** in `CHANGELOG.md`.
+
+---
+
+## 10. Where the human's opinions live
+
+They are strong and specific. Read `docs/PRODUCT_RULES.md` before making product
+decisions — it is the distilled set of "we decided X, not Y" that isn't obvious
+from the code. If a request seems to conflict with it, ask rather than assume.

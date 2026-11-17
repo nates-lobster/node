@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Node WebOS</title>
+<style>
+  :root { color-scheme: dark; --accent: #2bfbae; }
+  body {
+    margin: 0; width: 320px; padding: 14px;
+    background: #070c0e; color: #e6f4ef;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 12.5px;
+  }
+  h1 { font-size: 13px; margin: 0 0 10px; letter-spacing: .02em; }
+  h1 span { color: var(--accent); }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid rgba(255,255,255,.06); }
+  .row:first-of-type { border-top: 0; }
+  .muted { color: #6f8d84; }
+  .pill { font-size: 10px; border-radius: 999px; padding: 2px 7px; font-weight: 700; }
+  .pill.ok { background: rgba(43,251,174,.16); color: var(--accent); }
+  .pill.err { background: rgba(251,113,133,.16); color: #fb7185; }
+  .pill.idle { background: rgba(255,255,255,.08); color: #9fb8b0; }
+  button {
+    width: 100%; margin-top: 8px; background: var(--accent); color: #04120d; border: 0;
+    border-radius: 10px; padding: 9px; font-weight: 700; font-size: 12.5px; cursor: pointer; font-family: inherit;
+  }
+  button.ghost { background: rgba(255,255,255,.06); color: #cfe3dd; }
+  code { font-size: 10.5px; color: #9fb8b0; word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>Node <span>WebOS</span></h1>
+  <div class="row"><span class="muted">Server</span><code id="base">—</code></div>
+  <div class="row"><span class="muted">Session sync</span><span id="status" class="pill idle">—</span></div>
+  <div class="row"><span class="muted">Last sync</span><span id="last">never</span></div>
+  <div class="row"><span class="muted">Cookies shared</span><span id="count">0</span></div>
+  <button id="sync">Sync session now</button>
+  <button id="open" class="ghost">Open dashboard</button>
+  <button id="opts" class="ghost">Settings</button>
+  <script src="popup.js"></script>
+</body>
+</html>

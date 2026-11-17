@@ -1,0 +1,108 @@
+# Node — Git Ignore
+#
+# Golden rule: CODE is tracked, DATA is not. Everything the running server
+# writes at runtime lives under data/ and must never enter git. That is what
+# makes "pull the latest code, keep my data" safe.
+
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Runtime state: SQLite DB, credentials, tokens, uploaded files, browser
+# cookie profiles, scraped snapshots. NEVER COMMIT.
+# ---------------------------------------------------------------------------
+data/
+**/hub.db
+**/hub.db-*
+**/ai_providers.json
+**/auth_credentials.json
+**/auth_guard_token.txt
+**/guard_token.secret
+**/serve-token
+**/os_settings.json
+**/os_presets.json
+**/desktop_widgets.json
+**/focus_guard.json
+**/schedule_settings.json
+**/api_bridges.json
+**/inbox_tags.json
+**/inbox_learning.json
+**/inbox_filters.json
+**/importance_learner.json
+**/scraper_state*.json
+**/browser_profile/
+**/browser_profiles/
+uploads/
+notebook/
+*.sqlite
+*.sqlite3
+
+# Process/service credentials and local overrides
+*.pem
+*.key
+!**/app/*.key
+secrets.json
+config.local.yaml
+
+# ---------------------------------------------------------------------------
+# Tool caches. These are large and machine-specific — reinstalling is cheap,
+# committing them is not. (.cache alone holds ~760 MB of Playwright browsers.)
+# ---------------------------------------------------------------------------
+.cache/
+.local/
+.npm/
+.nvm/
+.pnpm-store/
+.node/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Playwright / browser automation
+.playwright-cli/
+playwright-report/
+test-results/
+
+# Build output
+dist/
+build/
+out/
+.next/
+.turbo/
+coverage/
+
+# Sandbox / machine noise (never part of the project)
+.sudo_as_admin_successful
+.config/
+.config
+*_as_admin_successful
+
+# Editors & OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temp
+*.log
+logs/
+tmp/
+tmp_*
+/tmp_*

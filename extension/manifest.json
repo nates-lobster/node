@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Node WebOS New Tab",
+  "version": "0.11.0",
+  "description": "Runs Node WebOS as your new-tab page and shares your local browser session with your own server so server-side logins stop expiring.",
+  "permissions": [
+    "cookies",
+    "storage",
+    "tabs",
+    "alarms"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  },
+  "action": {
+    "default_title": "Node WebOS",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

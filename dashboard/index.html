@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Node</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=10.1" />
+  <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png?v=10.1" />
+  <link rel="shortcut icon" href="/favicon.ico?v=10.1" />
+  <link rel="stylesheet" href="./assets/tailwind.css?v=10.1" />
+  <link rel="stylesheet" href="./styles.css?v=10.1" />
+</head>
+<body class="antialiased">
+
+  <!-- ===================================================================== -->
+  <!-- ZERO-LEAK OS LOCK SCREEN + LIVE AMBIENT WALLPAPER STREAM              -->
+  <!-- ===================================================================== -->
+  <div id="node-lockscreen" class="node-lockscreen">
+    <!-- Live Streamed Scenic Wallpaper Crossfade + Real-Time Ambient Aurora Canvas -->
+    <div id="lock-wp-a" class="node-lock-wp is-active" style="background-image: url('/wallpapers/emerald-fjord.jpg');"></div>
+    <div id="lock-wp-b" class="node-lock-wp"></div>
+    <canvas id="lock-stream-canvas" class="node-lock-canvas" aria-hidden="true"></canvas>
+    <div class="node-lock-vignette" aria-hidden="true"></div>
+
+    <div class="node-lock-clock-wrap relative z-10">
+      <div id="lock-clock" class="node-lock-clock">--:--</div>
+      <div id="lock-date" class="node-lock-date"></div>
+    </div>
+
+    <div id="lock-card" class="node-lock-card relative z-10">
+      <div class="node-lock-avatar" aria-hidden="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+      </div>
+      <div class="text-center mb-4">
+        <div class="text-sm font-semibold text-ink tracking-tight">Session Locked</div>
+        <div class="text-[11px] text-subtle-ink mt-0.5">Authenticate to unlock</div>
+      </div>
+
+      <form id="lock-form" autocomplete="off" class="space-y-3">
+        <div>
+          <input
+            id="lock-user"
+            type="text"
+            required
+            autocomplete="username"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+            placeholder="Username"
+            class="w-full rounded-xl studio-input px-3.5 py-2.5 text-xs placeholder-slate-500"
+          />
+        </div>
+        <div>
+          <input
+            id="lock-pass"
+            type="password"
+            required
+            autocomplete="current-password"
+            placeholder="Password"
+            class="w-full rounded-xl studio-input px-3.5 py-2.5 text-xs placeholder-slate-500"
+          />
+        </div>
+        <div id="lock-error" class="hidden text-[11px] text-rose-400 text-center font-medium"></div>
+        <button
+          id="lock-submit"
+          type="submit"
+          class="w-full rounded-xl btn-accent py-2.5 text-xs font-semibold tracking-wide cursor-pointer"
+        >Unlock</button>
+      </form>
+    </div>
+
+    <div class="relative z-10 w-full max-w-5xl flex items-center justify-between px-2 text-[11px] text-subtle-ink">
+      <span class="inline-flex items-center gap-1.5 font-mono tracking-wider opacity-85">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="color: var(--accent);" aria-hidden="true">
+          <line x1="12" y1="12" x2="12" y2="3.8"/><line x1="12" y1="12" x2="19.4" y2="8.6"/><line x1="12" y1="12" x2="17.8" y2="18.2"/><line x1="12" y1="12" x2="6.2" y2="18.2"/><line x1="12" y1="12" x2="4.6" y2="8.6"/><circle cx="12" cy="12" r="3.1" fill="currentColor"/><circle cx="12" cy="3.8" r="1.75" fill="currentColor"/><circle cx="19.4" cy="8.6" r="1.65" fill="currentColor"/><circle cx="17.8" cy="18.2" r="1.65" fill="currentColor"/><circle cx="6.2" cy="18.2" r="1.65" fill="currentColor"/><circle cx="4.6" cy="8.6" r="1.65" fill="currentColor"/>
+        </svg>
+        <span>NODE</span>
+      </span>
+      <div class="node-lock-scene-pill">
+        <button id="lock-wp-prev" type="button" class="node-lock-scene-btn" title="Previous Scene">◀</button>
+        <span id="lock-wp-label">Nordic Aurora Fjord</span>
+        <button id="lock-wp-next" type="button" class="node-lock-scene-btn" title="Next Scene">▶</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Empty mount container — populated strictly from /api/v1/auth/shell after server login -->
+  <div id="node-os-mount" class="hidden"></div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const lockScreen = document.getElementById("node-lockscreen");
+      const lockClock = document.getElementById("lock-clock");
+      const lockDate = document.getElementById("lock-date");
+      const lockCard = document.getElementById("lock-card");
+      const lockForm = document.getElementById("lock-form");
+      const userEl = document.getElementById("lock-user");
+      const passEl = document.getElementById("lock-pass");
+      const errEl = document.getElementById("lock-error");
+      const submitBtn = document.getElementById("lock-submit");
+      const mountEl = document.getElementById("node-os-mount");
+
+      // Live Lock Screen Ambient Wallpaper Stream (generic scenic artwork + 30fps aurora particles)
+      const LOCK_SCENES = [
+        { url: "/wallpapers/emerald-fjord.jpg", title: "Nordic Aurora Fjord" },
+        { url: "/wallpapers/starlight-peak.jpg", title: "Starlight Alpine Lake" },
+        { url: "/wallpapers/misty-pines.jpg", title: "Blue-Hour Pine Valley" },
+        { url: "/wallpapers/rainy-study-loft.jpg", title: "Rainy Study Loft" },
+      ];
+      let sceneIdx = 0;
+      let frontLayerIsA = true;
+      const wpA = document.getElementById("lock-wp-a");
+      const wpB = document.getElementById("lock-wp-b");
+      const wpLabel = document.getElementById("lock-wp-label");
+      const wpCanvas = document.getElementById("lock-stream-canvas");
+
+      function switchLockScene(delta) {
+        sceneIdx = (sceneIdx + delta + LOCK_SCENES.length) % LOCK_SCENES.length;
+        const sc = LOCK_SCENES[sceneIdx];
+        const nextEl = frontLayerIsA ? wpB : wpA;
+        const curEl = frontLayerIsA ? wpA : wpB;
+        const pre = new Image();
+        pre.onload = () => {
+          nextEl.style.backgroundImage = "url('" + sc.url + "')";
+          nextEl.classList.add("is-active");
+          curEl.classList.remove("is-active");
+          frontLayerIsA = !frontLayerIsA;
+          if (wpLabel) wpLabel.textContent = sc.title;
+        };
+        pre.src = sc.url;
+      }
+
+      document.getElementById("lock-wp-prev")?.addEventListener("click", () => switchLockScene(-1));
+      document.getElementById("lock-wp-next")?.addEventListener("click", () => switchLockScene(1));
+      const lockSceneTimer = setInterval(() => {
+        if (!document.hidden) switchLockScene(1);
+      }, 22000);
+
+      // Lightweight 30fps ambient aurora & floating mist particle stream on lock canvas
+      let lockAnimId = null;
+      let lockStreamStopped = false;
+      (function startLockAmbientStream() {
+        if (!wpCanvas) return;
+        const ctx = wpCanvas.getContext("2d");
+        if (!ctx) return;
+
+        function syncSize() {
+          wpCanvas.width = Math.max(320, Math.floor(window.innerWidth * 0.65));
+          wpCanvas.height = Math.max(240, Math.floor(window.innerHeight * 0.65));
+        }
+        syncSize();
+        window.addEventListener("resize", syncSize);
+
+        const motes = Array.from({ length: 34 }, (_, i) => ({
+          x: Math.random(),
+          y: Math.random(),
+          r: 0.9 + (i % 4) * 0.65,
+          vx: (Math.random() - 0.5) * 0.00028,
+          vy: -0.00018 - Math.random() * 0.00032,
+          phase: Math.random() * Math.PI * 2,
+        }));
+
+        let lastFrameTs = 0;
+        function renderFrame(ts) {
+          if (lockStreamStopped) return;
+          lockAnimId = requestAnimationFrame(renderFrame);
+          if (document.hidden || ts - lastFrameTs < 33) return;
+          lastFrameTs = ts;
+
+          const w = wpCanvas.width;
+          const h = wpCanvas.height;
+          ctx.clearRect(0, 0, w, h);
+
+          // Flowing aurora ribbon wave
+          const t = ts * 0.00045;
+          const grad = ctx.createLinearGradient(0, h * 0.08, w, h * 0.72);
+          grad.addColorStop(0, "rgba(43, 251, 174, 0.00)");
+          grad.addColorStop(0.35, "rgba(43, 251, 174, 0.11)");
+          grad.addColorStop(0.68, "rgba(56, 189, 248, 0.09)");
+          grad.addColorStop(1, "rgba(43, 251, 174, 0.00)");
+
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(0, h * 0.34);
+          for (let x = 0; x <= w; x += 32) {
+            const y = h * (0.28 + Math.sin(x * 0.0045 + t) * 0.065 + Math.cos(x * 0.0022 - t * 0.7) * 0.04);
+            ctx.lineTo(x, y);
+          }
+          ctx.lineTo(w, h * 0.62);
+          for (let x = w; x >= 0; x -= 32) {
+            const y = h * (0.50 + Math.sin(x * 0.0038 - t * 0.85) * 0.06);
+            ctx.lineTo(x, y);
+          }
+          ctx.closePath();
+          ctx.fill();
+
+          // Subtle drifting starlight / bokeh motes
+          for (const m of motes) {
+            m.x = (m.x + m.vx + 1) % 1;
+            m.y = (m.y + m.vy + 1) % 1;
+            const alpha = 0.16 + 0.24 * (0.5 + 0.5 * Math.sin(t * 2.4 + m.phase));
+            ctx.fillStyle = `rgba(210, 255, 240, ${alpha.toFixed(3)})`;
+            ctx.beginPath();
+            ctx.arc(m.x * w, m.y * h, m.r, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        lockAnimId = requestAnimationFrame(renderFrame);
+      })();
+
+      function stopLockWallpaperStream() {
+        lockStreamStopped = true;
+        clearInterval(lockSceneTimer);
+        if (lockAnimId) cancelAnimationFrame(lockAnimId);
+      }
+
+      // Ephemeral RAM-only session handle (NEVER written to localStorage/sessionStorage/DOM).
+      let ephemeralSessionToken = null;
+      let booting = false;
+
+      window.__nodeGetSessionHeaders = function () {
+        return ephemeralSessionToken ? { "X-Node-Session": ephemeralSessionToken } : {};
+      };
+
+      window.__nodeDecorateUrl = function (rawUrl) {
+        if (!rawUrl || !ephemeralSessionToken) return rawUrl;
+        const sep = rawUrl.indexOf("?") === -1 ? "?" : "&";
+        return rawUrl + sep + "_st=" + encodeURIComponent(ephemeralSessionToken);
+      };
+
+      function tickLockClock() {
+        const now = new Date();
+        let h = now.getHours() % 12;
+        if (h === 0) h = 12;
+        const m = String(now.getMinutes()).padStart(2, "0");
+        lockClock.textContent = h + ":" + m;
+        lockDate.textContent = now.toLocaleDateString([], {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+        });
+      }
+      tickLockClock();
+      const lockClockTimer = setInterval(tickLockClock, 1000);
+
+      function loadScriptSequential(src) {
+        return new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = src;
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error("Failed loading " + src));
+          document.head.appendChild(s);
+        });
+      }
+
+      async function bootAuthenticatedOS() {
+        if (booting) return false;
+        booting = true;
+        try {
+          const authHeaders = window.__nodeGetSessionHeaders();
+          const shellRes = await fetch("/api/v1/auth/shell", {
+            credentials: "same-origin",
+            headers: authHeaders,
+          });
+          if (!shellRes.ok) {
+            booting = false;
+            errEl.textContent = "Session rejected by browser or server (" + shellRes.status + ").";
+            errEl.classList.remove("hidden");
+            return false;
+          }
+          const shellHtml = await shellRes.text();
+
+          const jsRes = await fetch("/api/v1/auth/app.js?v=10.1", {
+            credentials: "same-origin",
+            headers: authHeaders,
+          });
+          if (!jsRes.ok) {
+            booting = false;
+            errEl.textContent = "Could not load OS controller (" + jsRes.status + ").";
+            errEl.classList.remove("hidden");
+            return false;
+          }
+          const osControllerCode = await jsRes.text();
+
+          stopLockWallpaperStream();
+          mountEl.innerHTML = shellHtml;
+          mountEl.classList.remove("hidden");
+          lockScreen.style.display = "none";
+          clearInterval(lockClockTimer);
+
+          await loadScriptSequential("./assets/marked.min.js?v=8.0");
+
+          const inlineController = document.createElement("script");
+          inlineController.textContent = osControllerCode;
+          document.head.appendChild(inlineController);
+
+          await loadScriptSequential("./assets/alpine.min.js?v=8.0");
+          return true;
+        } catch (err) {
+          booting = false;
+          lockScreen.style.display = "";
+          errEl.textContent = (err && err.message) ? err.message : "Failed to initialize desktop.";
+          errEl.classList.remove("hidden");
+          return false;
+        }
+      }
+
+      window.__nodeLockSession = async function () {
+        try {
+          await fetch("/api/v1/auth/logout", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: window.__nodeGetSessionHeaders(),
+          });
+        } catch (_e) {}
+        ephemeralSessionToken = null;
+        mountEl.innerHTML = "";
+        window.location.replace("/");
+      };
+
+      async function checkExistingSession() {
+        try {
+          const r = await fetch("/api/v1/auth/session", { credentials: "same-origin" });
+          if (r.ok) {
+            const d = await r.json();
+            if (d && d.authenticated) {
+              await bootAuthenticatedOS();
+              return;
+            }
+          }
+        } catch (_e) {}
+        userEl.focus();
+      }
+
+      lockForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const username = userEl.value.trim();
+        const password = passEl.value;
+        passEl.value = "";
+        if (!username || !password) return;
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = "Verifying…";
+        errEl.classList.add("hidden");
+        lockCard.classList.remove("is-error");
+
+        try {
+          const res = await fetch("/api/v1/auth/login", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password }),
+          });
+          if (res.ok) {
+            const loginData = await res.json();
+            if (loginData && loginData.session_token) {
+              ephemeralSessionToken = loginData.session_token;
+            }
+            userEl.value = "";
+            await bootAuthenticatedOS();
+            return;
+          }
+          let msg = "Invalid username or password";
+          try {
+            const body = await res.json();
+            if (body && body.detail) msg = body.detail;
+          } catch (_e) {}
+          errEl.textContent = msg;
+          errEl.classList.remove("hidden");
+          lockCard.classList.add("is-error");
+          passEl.focus();
+        } catch (_err) {
+          errEl.textContent = "Server unreachable";
+          errEl.classList.remove("hidden");
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Unlock";
+        }
+      });
+
+      checkExistingSession();
+    })();
+  </script>
+</body>
+</html>

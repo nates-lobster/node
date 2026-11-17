@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Node WebOS — Extension Settings</title>
+<style>
+  :root { color-scheme: dark; --accent: #2bfbae; }
+  body {
+    margin: 0; padding: 32px 20px; background: #070c0e; color: #e6f4ef;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 13px;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  h1 span { color: var(--accent); }
+  p.lede { color: #6f8d84; margin: 0 0 22px; font-size: 12px; line-height: 1.55; }
+  fieldset { border: 1px solid rgba(255,255,255,.09); border-radius: 14px; padding: 14px 16px; margin: 0 0 14px; background: rgba(255,255,255,.025); }
+  legend { padding: 0 6px; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: #6f8d84; font-weight: 700; }
+  label { display: block; margin: 9px 0 4px; color: #cfe3dd; font-weight: 600; font-size: 12px; }
+  input[type=text], input[type=number], textarea {
+    width: 100%; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10);
+    border-radius: 9px; padding: 8px 10px; color: inherit; font: inherit; font-size: 12.5px; outline: none;
+  }
+  textarea { min-height: 92px; resize: vertical; font-family: ui-monospace, monospace; font-size: 11.5px; line-height: 1.6; }
+  input:focus, textarea:focus { border-color: rgba(43,251,174,.55); box-shadow: 0 0 0 3px rgba(43,251,174,.10); }
+  .check { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-weight: 600; color: #cfe3dd; }
+  .hint { color: #6f8d84; font-size: 11px; margin-top: 5px; line-height: 1.5; }
+  button {
+    background: var(--accent); color: #04120d; border: 0; border-radius: 10px;
+    padding: 9px 16px; font-weight: 700; font-size: 12.5px; cursor: pointer; font-family: inherit;
+  }
+  button.ghost { background: rgba(255,255,255,.06); color: #cfe3dd; margin-left: 8px; }
+  #save-state { color: var(--accent); font-size: 11.5px; margin-left: 10px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Node <span>WebOS</span> × Browser</h1>
+  <p class="lede">
+    This extension does two things: it can replace your new-tab page with Node, and it can copy the cookies
+    Brave/Chromium already holds for your LMS and mail providers into your <em>own</em> server so server-side
+    sessions stop expiring. Cookie data is only ever sent to the server URL below.
+  </p>
+
+  <fieldset>
+    <legend>Server</legend>
+    <label for="base">Node base URL</label>
+    <input id="base" type="text" placeholder="http://127.0.0.1:8080" />
+    <div class="hint">Loopback, Tailscale (100.x.y.z), or another private address. Never a public host.</div>
+    <label for="token">Guard token</label>
+    <input id="token" type="text" spellcheck="false" placeholder="Paste the token from Node → Settings → Extension" style="font-family:ui-monospace,monospace;font-size:11.5px;" />
+    <div class="hint">Node → Settings → Extension → <strong>Guard token</strong>. Required when the lock screen is on, so the new tab can still read task/urgent counts.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Session capture</legend>
+    <label class="check"><input id="sync-enabled" type="checkbox" /> Keep server sessions alive automatically</label>
+    <div class="row2">
+      <div>
+        <label for="interval">Sync interval (minutes)</label>
+        <input id="interval" type="number" min="5" max="240" step="5" />
+      </div>
+      <div>
+        <label for="mode">New-tab default mode</label>
+        <select id="mode" style="width:100%;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.10);border-radius:9px;padding:8px 10px;color:inherit;font:inherit;font-size:12.5px;">
+          <option value="custom">Custom minimal</option>
+          <option value="dashboard">Full dashboard</option>
+          <option value="wallpaper">Wallpaper + clock</option>
+        </select>
+      </div>
+    </div>
+    <label for="domains">Domains to share (one per line)</label>
+    <textarea id="domains" spellcheck="false"></textarea>
+    <div class="hint">
+      Only cookies for these domains are read. Matches subdomains too (e.g. <code>instructure.com</code> covers
+      <code>canvas.instructure.com</code>). Add any provider you use.
+    </div>
+  </fieldset>
+
+  <button id="save">Save</button>
+  <button id="sync-now" class="ghost">Sync now</button>
+  <span id="save-state"></span>
+</div>
+<script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Node · New Tab</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <style>
+    :root {
+      --ink: #e8eef2;
+      --muted: #94a3b8;
+      --accent: #2bfbae;
+      --panel: rgba(12, 18, 22, 0.55);
+      --panel-border: rgba(255, 255, 255, 0.12);
+      --overlay: 35;
+      --ui-scale: 1;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      background: #0b1114;
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      overflow: hidden;
+    }
+    #wall {
+      position: fixed; inset: 0;
+      background-size: cover; background-position: center;
+      transform: scale(1.02);
+      transition: opacity .6s ease;
+    }
+    #scrim {
+      position: fixed; inset: 0;
+      /* Legibility veil, not a blackout: a soft corner falloff plus a tunable
+         flat tint so text stays readable over any wallpaper. */
+      background:
+        radial-gradient(130% 100% at 50% -10%, rgba(4, 8, 10, calc(var(--overlay) / 260)) 0%, rgba(4, 8, 10, calc(var(--overlay) / 100)) 78%);
+    }
+    .wrap {
+      position: relative; z-index: 2;
+      height: 100%; display: flex; flex-direction: column;
+      padding: clamp(20px, 4vh, 56px) clamp(20px, 5vw, 72px);
+      gap: clamp(14px, 2.4vh, 28px);
+    }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .clock {
+      font-size: clamp(44px, 9vw, 104px);
+      font-weight: 200; letter-spacing: -0.03em; line-height: .95;
+      font-variant-numeric: tabular-nums;
+      text-shadow: 0 6px 40px rgba(0,0,0,.55);
+    }
+    .date { color: var(--muted); font-size: clamp(12px, 1.5vw, 16px); margin-top: 8px; letter-spacing: .01em; }
+    .greet { font-size: clamp(13px, 1.6vw, 18px); color: var(--ink); opacity: .92; margin-top: 4px; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      border: 1px solid var(--panel-border); background: var(--panel);
+      backdrop-filter: blur(14px);
+      padding: 8px 12px; border-radius: 999px; font-size: 12px; color: var(--muted);
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(43, 251, 174, .16); }
+    .grid {
+      flex: 1; display: grid; gap: clamp(10px, 1.6vw, 18px);
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      align-content: start;
+    }
+    .card {
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      backdrop-filter: blur(16px);
+      border-radius: 18px; padding: 16px 18px;
+      box-shadow: 0 18px 50px rgba(0,0,0,.28);
+      min-height: 104px;
+    }
+    .card h3 {
+      margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+      color: var(--muted); font-weight: 600;
+    }
+    .row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13.5px; }
+    .row .k { color: var(--muted); font-size: 11px; min-width: 58px; font-variant-numeric: tabular-nums; }
+    .row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pill { border-radius: 999px; padding: 1px 7px; font-size: 10px; background: rgba(43,251,174,.14); color: var(--accent); }
+    .empty { color: var(--muted); font-size: 12.5px; }
+    footer {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; color: var(--muted); font-size: 11.5px;
+    }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    button, a.btn {
+      font: inherit; color: var(--ink); cursor: pointer;
+      border: 1px solid var(--panel-border); background: var(--panel);
+      backdrop-filter: blur(12px);
+      padding: 7px 12px; border-radius: 10px; font-size: 12px;
+      text-decoration: none; transition: transform .08s ease, border-color .15s ease, color .15s ease;
+    }
+    button:hover, a.btn:hover { border-color: rgba(43,251,174,.55); color: var(--accent); }
+    button:active, a.btn:active { transform: translateY(1px) scale(.99); }
+    form.quick { display: flex; gap: 8px; }
+    form.quick input {
+      flex: 1; font: inherit; font-size: 13px; color: var(--ink);
+      background: rgba(0,0,0,.32); border: 1px solid var(--panel-border);
+      border-radius: 10px; padding: 8px 11px; outline: none;
+    }
+    form.quick input:focus { border-color: rgba(43,251,174,.6); }
+    .hidden { display: none !important; }
+    /* The gate dims the underlying page but must not black it out — the clock and
+       cards are the point of a new-tab page, even before you unlock. */
+    #gate {
+      position: fixed; inset: 0; z-index: 5; display: grid; place-items: center;
+      background: radial-gradient(60% 50% at 50% 50%, rgba(4,8,10,.72) 0%, rgba(4,8,10,.24) 100%);
+    }
+    #gate .box {
+      text-align: center; width: min(360px, 88vw);
+      background: rgba(6,12,14,.72); border: 1px solid var(--panel-border);
+      border-radius: 18px; padding: 18px 20px 16px; backdrop-filter: blur(18px);
+      box-shadow: 0 24px 70px rgba(0,0,0,.55);
+    }
+    #gate input {
+      width: 100%; margin: 12px 0 10px; padding: 10px 12px; font: inherit;
+      background: rgba(0,0,0,.4); border: 1px solid var(--panel-border); border-radius: 10px; color: var(--ink);
+    }
+    #gate .err { color: #fb7185; font-size: 12px; min-height: 16px; }
+    .wallpaper-mode .card { display: none; }
+    .wallpaper-mode .grid { display: none; }
+  </style>
+</head>
+<body>
+  <div id="wall"></div>
+  <div id="scrim"></div>
+
+  <div class="wrap" id="wrap">
+    <header>
+      <div>
+        <div class="clock" id="clock">--:--</div>
+        <div class="date" id="date"></div>
+        <div class="greet" id="greet"></div>
+      </div>
+      <div class="badge" id="statusBadge"><span class="dot"></span><span id="statusText">Node</span></div>
+    </header>
+
+    <div class="grid" id="grid">
+      <div class="card" data-block="quick_add">
+        <h3>Quick add</h3>
+        <form class="quick" id="quickForm">
+          <input id="quickInput" placeholder="e.g. band practice friday 4pm, or buy milk" autocomplete="off" />
+          <button type="submit">Add</button>
+        </form>
+        <div class="empty" id="quickHint" style="margin-top:8px">Tasks and events are created for you.</div>
+      </div>
+
+      <div class="card" data-block="urgent_tasks">
+        <h3>Needs attention</h3>
+        <div id="tasks"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card" data-block="next_event">
+        <h3>Next up</h3>
+        <div id="events"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card" data-block="inbox_digest">
+        <h3>Inbox digest</h3>
+        <div id="inbox"><div class="empty">Loading…</div></div>
+      </div>
+
+      <div class="card" data-block="grades">
+        <h3>Grades</h3>
+        <div id="gradesBlock"><div class="empty">Loading…</div></div>
+      </div>
+    </div>
+
+    <footer>
+      <div class="actions">
+        <a class="btn" href="/" id="openDashboard">Open full dashboard</a>
+        <button id="modeBtn" type="button">Mode: dashboard</button>
+      </div>
+      <div id="footNote">Node WebOS · new tab</div>
+    </footer>
+  </div>
+
+  <div id="gate" class="hidden">
+    <div class="box">
+      <div style="font-size:13px;color:var(--muted)">Locked — sign in to see your dashboard</div>
+      <form id="loginForm">
+        <input id="username" placeholder="username" autocomplete="username" />
+        <input id="password" type="password" placeholder="password" autocomplete="current-password" />
+        <div class="err" id="loginErr"></div>
+        <button type="submit" style="width:100%">Unlock</button>
+      </form>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  let cfg = { mode: "dashboard", custom_blocks: [], wallpaper_id: "", greeting_name: "", overlay_strength: 35 };
+  let authed = false;
+  let clockTimer = null;
+
+  // ---------------------------------------------------------------- clock
+  function tick() {
+    const now = new Date();
+    $("clock").textContent = now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    $("date").textContent = now.toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" });
+  }
+
+  function greeting() {
+    const h = new Date().getHours();
+    const part = h < 5 ? "Still up" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+    const name = cfg.greeting_name ? `, ${cfg.greeting_name}` : "";
+    $("greet").textContent = `${part}${name}`;
+  }
+
+  // ----------------------------------------------------------------- api
+  async function api(path, opts = {}) {
+    const res = await fetch(path, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+      ...opts,
+    });
+    if (res.status === 401) { showGate(); throw new Error("locked"); }
+    if (!res.ok) throw new Error(`${res.status}`);
+    const ct = res.headers.get("content-type") || "";
+    return ct.includes("json") ? res.json() : res.text();
+  }
+
+  function showGate() { $("gate").classList.remove("hidden"); }
+  function hideGate() { $("gate").classList.add("hidden"); }
+
+  // --------------------------------------------------------------- render
+  function row(title, meta, cls) {
+    const el = document.createElement("div");
+    el.className = "row";
+    const t = document.createElement("div");
+    t.className = "t";
+    t.textContent = title || "(untitled)";
+    el.appendChild(t);
+    if (meta) {
+      const m = document.createElement("span");
+      m.className = cls || "k";
+      m.textContent = meta;
+      el.appendChild(m);
+    }
+    return el;
+  }
+
+  async function loadTasks() {
+    try {
+      const rows = await api("/api/v1/tasks?completed=false&limit=8");
+      const list = Array.isArray(rows) ? rows : (rows.tasks || []);
+      const open = list.filter((t) => !t.completed).slice(0, 6);
+      const box = $("tasks");
+      box.innerHTML = "";
+      if (!open.length) { box.innerHTML = '<div class="empty">Nothing urgent. Nice.</div>'; return; }
+      open.forEach((t) => box.appendChild(row(t.title, t.due_date ? String(t.due_date).slice(5) : (t.priority || ""), "pill")));
+    } catch (e) { $("tasks").innerHTML = '<div class="empty">Unavailable</div>'; }
+  }
+
+  async function loadEvents() {
+    try {
+      const data = await api("/api/v1/calendar/events?limit=6");
+      const list = Array.isArray(data) ? data : (data.events || []);
+      const now = new Date();
+      const upcoming = list
+        .filter((e) => e.start_at && new Date(e.start_at) >= new Date(now.toDateString()))
+        .sort((a, b) => String(a.start_at).localeCompare(String(b.start_at)))
+        .slice(0, 5);
+      const box = $("events");
+      box.innerHTML = "";
+      if (!upcoming.length) { box.innerHTML = '<div class="empty">No upcoming events.</div>'; return; }
+      upcoming.forEach((e) => {
+        const when = e.all_day ? "all day" : String(e.start_at).slice(11, 16);
+        const day = String(e.start_at).slice(5, 10);
+        box.appendChild(row(e.title, `${day} ${when}`, "pill"));
+      });
+    } catch (e) { $("events").innerHTML = '<div class="empty">Unavailable</div>'; }
+  }
+
+  async function loadInbox() {
+    try {
+      const data = await api("/api/v1/inbox/query?q=" + encodeURIComponent("is:unread is:important") + "&limit=5");
+      const box = $("inbox");
+      box.innerHTML = "";
+      const items = data.notifications || [];
+      if (!items.length) { box.innerHTML = '<div class="empty">Inbox is clear.</div>'; return; }
+      items.forEach((n) => box.appendChild(row(n.title, n.source_app || "", "k")));
+      if (data.count > items.length) {
+        const more = document.createElement("div");
+        more.className = "empty";
+        more.textContent = `+${data.count - items.length} more`;
+        box.appendChild(more);
+      }
+    } catch (e) { $("inbox").innerHTML = '<div class="empty">Unavailable</div>'; }
+  }
+
+  async function loadGrades() {
+    try {
+      const data = await api("/api/v1/grades");
+      const s = (data && data.summary) || {};
+      const box = $("gradesBlock");
+      const parts = [];
+      if (s.average_percent !== null && s.average_percent !== undefined) parts.push(`${s.average_percent}% avg`);
+      if (s.unweighted_gpa !== null && s.unweighted_gpa !== undefined) parts.push(`${Number(s.unweighted_gpa).toFixed(2)} GPA`);
+      if (s.total_missing) parts.push(`${s.total_missing} missing`);
+      box.innerHTML = parts.length
+        ? `<div class="row"><div class="t">${parts.join(" · ")}</div></div>`
+        : '<div class="empty">No grades scanned yet.</div>';
+    } catch (e) { $("gradesBlock").innerHTML = '<div class="empty">Unavailable</div>'; }
+  }
+
+  async function quickAdd(text) {
+    const res = await api("/api/v1/ai/quick-capture", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+    return res;
+  }
+
+  // --------------------------------------------------------------- config
+  function applyMode(mode) {
+    document.body.classList.toggle("wallpaper-mode", mode === "wallpaper");
+    $("grid").classList.toggle("hidden", mode === "wallpaper" || mode === "lock");
+    $("modeBtn").textContent = `Mode: ${mode}`;
+  }
+
+  function applyBlocks() {
+    const allowed = new Set(cfg.custom_blocks && cfg.custom_blocks.length ? cfg.custom_blocks : null);
+    document.querySelectorAll(".card[data-block]").forEach((el) => {
+      const name = el.getAttribute("data-block");
+      const show = cfg.mode === "custom" ? (!allowed || allowed.has(name)) : name !== "quick_add" && name !== "grades";
+      el.classList.toggle("hidden", !show);
+    });
+  }
+
+  async function loadWallpaper() {
+    try {
+      const data = await api("/api/v1/wallpapers");
+      const list = (data && data.wallpapers) || [];
+      const chosen = cfg.wallpaper_id
+        ? list.find((w) => (w.filename || w.name) === cfg.wallpaper_id)
+        : list[0];
+      const file = chosen ? (chosen.filename || chosen.name) : null;
+      const wall = $("wall");
+      if (file) wall.style.backgroundImage = `url("/wallpapers/${encodeURIComponent(file)}")`;
+      else {
+        const settings = await api("/api/v1/settings").catch(() => null);
+        const wp = settings && settings.values && settings.values.wallpaper;
+        if (wp) wall.style.backgroundImage = `url("/wallpapers/${encodeURIComponent(wp)}")`;
+      }
+    } catch (_e) { /* wallpaper is cosmetic */ }
+  }
+
+  async function setMode(mode) {
+    const res = await api("/api/v1/newtab/config", {
+      method: "POST",
+      body: JSON.stringify({
+        mode,
+        show_on_open: cfg.show_on_open !== false,
+        custom_blocks_csv: (cfg.custom_blocks || []).join(","),
+        wallpaper_id: cfg.wallpaper_id || "",
+        greeting_name: cfg.greeting_name || "",
+        overlay_strength: Number(cfg.overlay_strength || 35),
+      }),
+    });
+    cfg = { ...cfg, ...(res.config || {}), mode };
+    applyMode(cfg.mode);
+    applyBlocks();
+  }
+
+  async function boot() {
+    tick();
+    clockTimer = setInterval(tick, 15000);
+
+    // URL override: ?newtab=lock|wallpaper|custom and ?mode=
+    const urlMode = params.get("newtab") || params.get("mode");
+    try {
+      const session = await fetch("/api/v1/auth/session", { credentials: "include" }).then((r) => r.json());
+      authed = Boolean(session.authenticated);
+    } catch (_e) { authed = false; }
+
+    if (!authed) {
+      showGate();
+      $("statusText").textContent = "Locked";
+    } else {
+      hideGate();
+      try {
+        cfg = { ...cfg, ...(await api("/api/v1/newtab/config")) };
+      } catch (_e) {}
+      if (urlMode) cfg.mode = urlMode;
+      document.documentElement.style.setProperty("--overlay", String(cfg.overlay_strength ?? 35));
+      greeting();
+      applyMode(cfg.mode);
+      applyBlocks();
+      await loadWallpaper();
+      if (cfg.mode === "custom" || cfg.mode === "dashboard") {
+        loadTasks(); loadEvents(); loadInbox();
+        if (!cfg.custom_blocks || cfg.custom_blocks.includes("grades")) loadGrades();
+        $("statusText").textContent = "Connected";
+      }
+    }
+
+    $("quickForm").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const input = $("quickInput");
+      const text = input.value.trim();
+      if (!text) return;
+      const hint = $("quickHint");
+      hint.textContent = "Adding…";
+      try {
+        const res = await quickAdd(text);
+        const reply = res && res.reply ? String(res.reply) : "Added.";
+        // quick-capture replies use **bold**; this surface is plain text.
+        hint.textContent = reply.replace(/\*\*/g, "");
+        input.value = "";
+        loadTasks(); loadEvents();
+      } catch (e) {
+        hint.textContent = "Could not add that — try again.";
+      }
+    });
+
+    $("modeBtn").addEventListener("click", async () => {
+      const order = ["dashboard", "custom", "lock", "wallpaper"];
+      const idx = order.indexOf(cfg.mode);
+      const next = order[(idx + 1) % order.length];
+      try { await setMode(next); } catch (_e) {}
+    });
+
+    $("loginForm").addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      $("loginErr").textContent = "";
+      try {
+        const res = await fetch("/api/v1/auth/login", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: $("username").value, password: $("password").value }),
+        });
+        if (!res.ok) { $("loginErr").textContent = "Invalid credentials"; return; }
+        location.reload();
+      } catch (_e) { $("loginErr").textContent = "Network error"; }
+    });
+
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && authed) { tick(); loadTasks(); loadEvents(); loadInbox(); }
+    });
+    window.addEventListener("beforeunload", () => clockTimer && clearInterval(clockTimer));
+  }
+
+  boot();
+})();
+</script>
+</body>
+</html>
