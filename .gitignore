@@ -27,6 +27,7 @@ data/
 **/focus_guard.json
 **/schedule_settings.json
 **/api_bridges.json
+**/apps_config.yaml
 **/inbox_tags.json
 **/inbox_learning.json
 **/inbox_filters.json

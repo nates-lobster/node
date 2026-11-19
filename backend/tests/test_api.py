@@ -1850,15 +1850,17 @@ def test_v92_powerschool_all_courses_trends_history_and_assignments(client: Test
 def test_v10_app_library_zero_preinstalled_and_1click_install(client: TestClient, tmp_path):
     """
     Production Release Pillar 3A:
-    - Fresh `scrapers/apps_config.yaml` ships with ZERO preinstalled apps (no hardcoded MS Teams/Outlook).
+    - A fresh install has ZERO preinstalled apps (no hardcoded MS Teams/Outlook); the registry is runtime data under data/.
     - `GET /api/v1/apps/catalog` exposes 17+ popular templates (Gmail, ProtonMail, Outlook, Teams, GroupMe, PowerSchool, Schoology, Canvas, Classroom).
     - `POST /api/v1/apps/install-template` installs selected apps on demand.
     """
     import yaml as _yaml
     from app.apps_manager import AppsConfigManager
 
-    repo_cfg = _yaml.safe_load((REPO_ROOT / "scrapers" / "apps_config.yaml").read_text(encoding="utf-8"))
-    assert repo_cfg.get("apps") == []
+    # No app registry is tracked in the repo any more: installed apps are user data.
+    assert not (REPO_ROOT / "scrapers").exists()
+    from app.config import settings as _settings
+    assert "scrapers" not in Path(type(_settings).model_fields["apps_config_path"].default).parts
 
     fresh_mgr = AppsConfigManager(config_path=tmp_path / "fresh_apps.yaml")
     assert fresh_mgr.list_apps() == []
@@ -3029,3 +3031,29 @@ def test_v011_stream_websocket_closes_after_error(client: TestClient, monkeypatc
         closing = ws.receive()
         assert closing["type"] == "websocket.close"
         assert closing["code"] == 1011
+
+
+def test_v012_legacy_apps_registry_migrates_into_data(tmp_path):
+    """Pre-0.12 installs kept installed apps in the tracked scrapers/ file; boot moves them to data/."""
+    import yaml as _yaml
+    from app.apps_manager import AppsConfigManager
+
+    legacy = tmp_path / "legacy_apps_config.yaml"
+    legacy.write_text(_yaml.safe_dump({"global": {"poll_interval_seconds": 30}, "apps": [{"name": "Gmail", "url": "https://mail.google.com"}]}), encoding="utf-8")
+    empty_legacy = tmp_path / "empty.yaml"
+    empty_legacy.write_text("apps: []\n", encoding="utf-8")
+
+    mgr = AppsConfigManager(config_path=tmp_path / "data" / "apps_config.yaml")
+    assert mgr.migrate_legacy_config([str(tmp_path / "missing.yaml"), str(empty_legacy), str(legacy)]) == str(legacy)
+    assert [a["name"] for a in mgr.list_apps()] == ["Gmail"]
+    assert legacy.is_file()  # source is never deleted
+
+    # Idempotent: an existing registry is never overwritten.
+    mgr.add_or_replace_app({"name": "Canvas", "url": "https://canvas.instructure.com"})
+    assert mgr.migrate_legacy_config([str(legacy)]) is None
+    assert sorted(a["name"] for a in mgr.list_apps()) == ["Canvas", "Gmail"]
+
+    # Nothing to migrate from an empty legacy file.
+    fresh = AppsConfigManager(config_path=tmp_path / "fresh" / "apps_config.yaml")
+    assert fresh.migrate_legacy_config([str(empty_legacy)]) is None
+    assert not fresh.config_path.exists()

@@ -64,8 +64,15 @@ class Settings(BaseSettings):
     ai_providers_path: str = str(DEFAULT_DATA_DIR / "ai_providers.json")
     extensions_dir: str = str(DEFAULT_DATA_DIR / "extensions")
 
-    # Shared Scraper YAML Config & Runtime State Paths
-    apps_config_path: str = str(BASE_ROOT / "scrapers" / "apps_config.yaml")
+    # Installed-apps registry (written by the App Library / AI) + browser runtime state.
+    # Runtime data, so it lives under data/ — never in a tracked file.
+    apps_config_path: str = str(DEFAULT_DATA_DIR / "apps_config.yaml")
+    # Where pre-0.12 installs kept the registry (tracked scrapers/ file or its
+    # old container mount). Read once on boot to migrate, never written.
+    legacy_apps_config_paths: List[str] = [
+        str(BASE_ROOT / "scrapers" / "apps_config.yaml"),
+        "/config/apps_config.yaml",
+    ]
     browser_profile_dir: str = str(DEFAULT_DATA_DIR / "browser_profile")
     browser_profiles_root: str = str(DEFAULT_DATA_DIR / "browser_profiles")
     browser_executable_path: str = ""  # Optional custom binary; auto-prefers /usr/bin/brave-browser

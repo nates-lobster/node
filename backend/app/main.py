@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 import json
 import io
+import logging
 import re
 import zipfile
 from pathlib import Path
@@ -138,6 +139,8 @@ from .task_intelligence import (
 BOOT_TIME = time.monotonic()
 UI_DIR = Path(__file__).resolve().parent / "ui"
 
+logger = logging.getLogger("node.main")
+
 PUBLIC_EXACT_PATHS = {
     "/",
     "/index.html",
@@ -214,6 +217,9 @@ def _request_authenticated_user(request: Request, db: Session) -> Optional[str]:
 async def lifespan(_: FastAPI):
     init_db()
     auth_service.ensure_guard_tokens()
+    migrated_from = apps_manager.migrate_legacy_config()
+    if migrated_from:
+        logger.info("Migrated installed-apps registry from %s to %s", migrated_from, apps_manager.config_path)
     memory_store.ensure_files()
     ai_runtime_manager.reconcile_stale_jobs_on_boot()
 
@@ -2074,7 +2080,7 @@ def append_ai_note(payload: QuickNoteAppendRequest) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Monitored Websites / Apps Manager (`scrapers/apps_config.yaml`)
+# Monitored Websites / Apps Manager (installed-apps registry under data/)
 # ---------------------------------------------------------------------------
 @app.get("/api/v1/apps")
 def get_monitored_apps(session: Session = Depends(get_session)) -> Dict[str, Any]:
