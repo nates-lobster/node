@@ -15,10 +15,11 @@ repo (git)                         server (not in git)
 ├── dashboard/                       ├── hub.db            ← your whole life
 ├── extension/                       ├── uploads/
 ├── docs/                            ├── browser_profile/  ← logged-in sessions
-├── scrapers/apps_config.yaml        ├── auth_credentials.json
-├── docker-compose.yml               ├── os_settings.json
-├── .env.example                     ├── inbox_tags.json
-└── AGENT.md                         └── ...
+├── docker-compose.yml               ├── apps_config.yaml  ← installed apps
+├── .env.example                     ├── auth_credentials.json
+└── AGENT.md                         ├── guard_token.secret / guard_tokens.json
+                                     ├── os_settings.json
+                                     └── ...
 ```
 
 `data/` is gitignored **and** mounted from the host in `docker-compose.yml`, so
@@ -179,6 +180,20 @@ sudo systemctl daemon-reload && sudo systemctl enable --now node
 
 Defaults are `admin` / `changeme`. **Change them before exposing the server.**
 
+### 5.0 Device (guard) tokens
+
+Clients that can't sign in use scoped tokens instead, one per client family
+(`extension`, `focus_guard`, `worker`), each limited to its own routes. Manage
+them in **Settings → System → Device tokens**, or over SSH:
+
+```bash
+docker exec -it hub-backend python -m app.auth_cli guard-tokens            # list (full tokens)
+docker exec -it hub-backend python -m app.auth_cli guard-tokens rotate worker
+docker exec -it hub-backend python -m app.auth_cli guard-tokens end-legacy
+```
+
+If a token leaks, rotate just that scope; the other clients keep working.
+
 ### 5.1 The sandbox instance
 
 The workspace you were handed runs with:
@@ -196,7 +211,7 @@ That is throwaway. A real deployment must set its own.
 |---|---|
 | `BIND_IP`, `DASHBOARD_PORT` | front door |
 | `NODE_AUTH_ENABLED`, `NODE_AUTH_USERNAME`, `NODE_AUTH_PASSWORD` | lock screen |
-| `AUTH_GUARD_TOKEN_PATH` | where the guard token is stored |
+| `AUTH_GUARD_TOKEN_PATH` | where the `extension` guard token is stored (the other scopes go in `guard_tokens.json` beside it) |
 | `TZ` | authoritative local time (calendar, cron, weekdays) |
 | `DATABASE_URL` | override the SQLite path |
 | `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | local model (`auto` = discover) |
@@ -231,17 +246,15 @@ The agent works on the same repo. To let it operate safely:
 
 1. Add `AGENT.md` (already at the root) to its context or working directory — it
    is the entry point and assumes zero prior knowledge.
-2. It should work on a branch and open a PR or push to a non-`main` branch:
-   ```bash
-   git checkout -b feat/<thing>
-   # ...work...
-   git push -u origin feat/<thing>
-   ```
-3. You merge and pull. The agent never pushes to `main`, never force-pushes, and
-   never touches `data/`.
+2. It works on a branch, opens a PR into `main`, and — by your decision
+   (2026-11) — merges it itself once the checks it can run are green.
+3. You pull on the server (`git pull --ff-only && docker compose up -d --build`)
+   after reading `CHANGELOG.md` for manual steps. The agent never pushes directly
+   to `main`, never force-pushes, and never touches `data/`.
 4. If it needs a secret, you put it in `.env` on the server — not in the repo, not
    in chat.
 
-**What the agent can verify without you:** `pytest` (45 tests), import checks,
-`node --check`, and a real headless browser against a running server. Expect it to
+**What the agent can verify without you:** `pytest` (49 tests; the 5 that need a
+real browser skip in sandboxes without one), import checks, `node --check`, and —
+where a browser can be installed — a real headless browser against a running server. Expect it to
 run those before claiming anything works.
