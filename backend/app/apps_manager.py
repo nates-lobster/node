@@ -598,7 +598,7 @@ APP_LIBRARY_CATALOG: List[Dict[str, Any]] = [
 
 
 class AppsConfigManager:
-    """Reads and writes `scrapers/apps_config.yaml` safely for UI and AI management."""
+    """Reads and writes the installed-apps registry (`settings.apps_config_path`, under data/)."""
 
     def __init__(self, config_path: Optional[str] = None) -> None:
         self.config_path = Path(config_path or settings.apps_config_path)
@@ -630,16 +630,15 @@ class AppsConfigManager:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         header = (
             "# =============================================================================\n"
-            "# Universal Notification Hub — Modular App Scraper Registry\n"
-            "# Managed via WebOS Apps Studio or direct YAML edits (hot-reloaded by scrapers).\n"
+            "# Node — Installed Apps Registry (runtime data, not tracked in git)\n"
+            "# Managed via the App Library / Monitors window, the AI, or direct YAML edits.\n"
             "# =============================================================================\n\n"
         )
         yaml_body = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=False)
         full_content = header + yaml_body
 
-        # Docker single-file bind mounts (`./scrapers/apps_config.yaml:/config/apps_config.yaml`)
-        # hold an active mount inode, so `os.replace(tmp, target)` raises EBUSY (errno 16) or EXDEV (errno 18).
-        # Fall back cleanly to direct in-place write when atomic rename is rejected by the mount!
+        # If someone bind-mounts this file directly (single-file mount), `os.replace(tmp, target)`
+        # raises EBUSY (errno 16) or EXDEV (errno 18). Fall back to an in-place write.
         tmp = self.config_path.with_suffix(f".{os.getpid()}.tmp")
         try:
             tmp.write_text(full_content, encoding="utf-8")
@@ -651,6 +650,28 @@ class AppsConfigManager:
             except OSError:
                 pass
             self.config_path.write_text(full_content, encoding="utf-8")
+
+    def migrate_legacy_config(self, legacy_paths: Optional[List[str]] = None) -> Optional[str]:
+        """
+        One-time move of a pre-0.12 registry into data/. Returns the source path
+        if something was migrated. Never overwrites an existing registry and
+        never deletes the source.
+        """
+        if self.config_path.exists():
+            return None
+        for raw in legacy_paths if legacy_paths is not None else list(settings.legacy_apps_config_paths):
+            src = Path(raw)
+            try:
+                if src.resolve() == self.config_path.resolve() or not src.is_file():
+                    continue
+                data = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            if not isinstance(data, dict) or not data.get("apps"):
+                continue  # an empty legacy file has nothing worth carrying over
+            self._write_raw(data)
+            return str(src)
+        return None
 
     def get_global_and_apps(self) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         raw = self._read_raw()
@@ -1029,7 +1050,7 @@ class AppsConfigManager:
                 explanation += f" Live URL check detected a login redirect (`{discovered_auth_pattern}`), so I added it to the SSO login-wall detector automatically."
 
         tips = [
-            "Once saved, run `auth_bootstrap.py` on your Debian server if this site requires an authenticated session.",
+            "If this site needs a login, open its Node window and sign in once (the session persists in its server browser profile), or let the Node browser extension sync your cookies.",
             "Toggle 'Zero-Knowledge (Ping Only)' on if this app holds private/encrypted messages you never want summarized.",
             "To target a specific badge element, right-click the unread badge in Chrome → Inspect → copy its CSS selector.",
         ]

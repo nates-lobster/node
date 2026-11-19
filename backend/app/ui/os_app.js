@@ -2233,7 +2233,8 @@ document.addEventListener("alpine:init", () => {
           this.lockSession();
           return;
         }
-        w.streamStatus = "Paused";
+        // Keep a server-reported error visible instead of masking it as "Paused".
+        if (w.streamStatus !== "Error") w.streamStatus = "Paused";
       };
 
       ws.onerror = () => {
@@ -6597,6 +6598,63 @@ document.addEventListener("alpine:init", () => {
         this.notify("Guard token copied — paste it into the extension settings");
       } catch (_e) {
         this.notify("Copy blocked by the browser — select the token manually", "error");
+      }
+    },
+
+    // Scoped guard tokens (Settings → System → Device tokens)
+    guardTokens: { legacy_shared: false, scopes: [] },
+    guardTokenConfirm: "",
+    guardTokenBusy: false,
+
+    async loadGuardTokens() {
+      try {
+        this.guardTokens = await this.apiFetch("/api/v1/auth/guard-tokens");
+      } catch (err) {
+        this.notify(err.message || "Could not read device tokens", "error");
+      }
+    },
+
+    async copyGuardToken(scope) {
+      if (!scope || !scope.token) return;
+      try {
+        await navigator.clipboard.writeText(scope.token);
+        this.notify(`${scope.label} token copied`);
+      } catch (_e) {
+        this.notify("Copy blocked by the browser — select the token manually", "error");
+      }
+    },
+
+    async rotateGuardToken(scopeId) {
+      // Two-step: first click arms, second click rotates.
+      if (this.guardTokenConfirm !== scopeId) {
+        this.guardTokenConfirm = scopeId;
+        setTimeout(() => {
+          if (this.guardTokenConfirm === scopeId) this.guardTokenConfirm = "";
+        }, 4000);
+        return;
+      }
+      this.guardTokenConfirm = "";
+      this.guardTokenBusy = true;
+      try {
+        this.guardTokens = await this.apiFetch(`/api/v1/auth/guard-tokens/${encodeURIComponent(scopeId)}/rotate`, { method: "POST" });
+        if (scopeId === "extension") this.loadExtensionInfo();
+        this.notify("Token rotated — update every client that used the old one");
+      } catch (err) {
+        this.notify(err.message || "Rotate failed", "error");
+      } finally {
+        this.guardTokenBusy = false;
+      }
+    },
+
+    async endGuardTokenLegacy() {
+      this.guardTokenBusy = true;
+      try {
+        this.guardTokens = await this.apiFetch("/api/v1/auth/guard-tokens/end-legacy", { method: "POST" });
+        this.notify("Each token now unlocks only its own routes");
+      } catch (err) {
+        this.notify(err.message || "Could not finish migration", "error");
+      } finally {
+        this.guardTokenBusy = false;
       }
     },
 

@@ -1,4 +1,4 @@
-# Node (v0.11.0)
+# Node (v0.12.0)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -25,6 +25,25 @@ docker compose up -d --build         # http://<server>:8080
 writes lives in `data/` (SQLite DB, uploads, browser sessions, credentials). It is
 gitignored and host-mounted, so `git pull` updates the code and never touches your
 data.
+
+---
+
+## What's New in v0.12.0
+
+A security and maintenance release. **One manual step if you installed apps.**
+See [`CHANGELOG.md`](CHANGELOG.md).
+
+- **Scoped device tokens.** The extension, the focus guard and remote workers
+  each get their own guard token, limited to their own routes. Manage them in
+  **Settings → System → Device tokens** or with `auth_cli guard-tokens`. Upgrades
+  keep working in a *legacy* mode until you click **Finish migration**.
+- **Installed apps are now user data** (`data/apps_config.yaml`), not a tracked
+  file. The unused `scrapers/` container is gone.
+- **Fixes:** the stream window no longer hangs when the server browser can't
+  start, the system status reports the real version, and the extension's
+  new-tab settings sync no longer depends on a session cookie.
+- **Tests run anywhere:** no hardcoded paths, real-browser tests skip cleanly,
+  and calendar fixtures no longer expire.
 
 ---
 
@@ -66,7 +85,7 @@ Tag registry with editable descriptions (the description *is* the classifier cri
 Learned HTTP APIs instead of a ~70%-reliable stream window: **verified live at `tier: 1`, 149 ms, JSON out, no browser.** Node registers the bridge, enumerates its operations, and calls them through `POST /api/v1/bridges/call`. The MV3 extension feeds cookies from your real local session into the bridge store, so server-side sessions stop expiring.
 
 ### 4. Browser extension + new-tab modes
-`/home/user/extension/` is a complete Manifest V3 extension, downloadable in-app as a zip. It can take over the Brave/Chromium new-tab page in **dashboard / minimal / wallpaper** mode, and it syncs session cookies for the domains you list — authenticated by a **guard token** that unlocks exactly three routes.
+`extension/` is a complete Manifest V3 extension, downloadable in-app as a zip. It can take over the Brave/Chromium new-tab page in **dashboard / minimal / wallpaper** mode, and it syncs session cookies for the domains you list — authenticated by a **guard token** that unlocks exactly three routes.
 
 ### 5. Grades you actually control
 Removing a course **sticks** — the visibility row is written even for courses not yet in the DB, so scans can't resurrect them, and averages/GPA/briefing all recompute over the visible set. Course **groups** act as tabs with per-group averages (e.g. one per monitor).
@@ -80,7 +99,7 @@ User tag corrections are now authoritative and can no longer be overwritten by a
 
 ### 1. Resizable Desktop Widgets, App Library & Custom Apps / Widgets SDK
 - **Resizable & Customizable Desktop Widgets:** Every widget on the 12-column Desktop grid can be resized (`3–12` columns × `1–4` height rows via corner drag handle or quick size controls), reordered, hidden/removed, or restored via the `+ Widgets` picker — plus pinned web apps and sandboxed custom widgets installed from the Extension Studio.
-- **Zero-Preinstalled App Library:** Fresh installations ship completely clean (`apps: []` in `scrapers/apps_config.yaml` — no hardcoded MS Teams or Outlook defaults). Open **Monitors → App Library** for 1-click installation across 17+ templates: **Gmail, ProtonMail, Outlook, Microsoft Teams, Slack, Discord, GroupMe, WhatsApp Web, PowerSchool, Schoology, Canvas LMS, Google Classroom, AP Classroom, Infinite Campus, Gradescope, GitHub, and Notion** — or add any custom web URL with isolated multi-account browser profiles.
+- **Zero-Preinstalled App Library:** Fresh installations ship completely clean (the installed-apps registry in `data/apps_config.yaml` starts empty — no hardcoded MS Teams or Outlook defaults). Open **Monitors → App Library** for 1-click installation across 17+ templates: **Gmail, ProtonMail, Outlook, Microsoft Teams, Slack, Discord, GroupMe, WhatsApp Web, PowerSchool, Schoology, Canvas LMS, Google Classroom, AP Classroom, Infinite Campus, Gradescope, GitHub, and Notion** — or add any custom web URL with isolated multi-account browser profiles.
 - **Installable Custom Apps & Desktop Widgets (`window.NodeOS` SDK):** Build, install, export, and upload `.nodeapp.json` / `.zip` packages (`manifest.json` + HTML/CSS/JS) that run as native Node windows and/or live Desktop widgets via a capability-gated `postMessage` bridge (`storage`, `tasks`, `calendar`, `grades`, `notify`, `ai`). Full developer guide: [`docs/APPS_AND_WIDGETS_SDK.md`](docs/APPS_AND_WIDGETS_SDK.md) (also viewable in-OS under **Settings → Custom Apps & SDK**).
 
 ### 2. Generalized Multi-LMS Grades & Assignments (PowerSchool + Schoology + Canvas + Classroom)
@@ -115,6 +134,10 @@ docker exec -it hub-backend python -m app.auth_cli status
 
 # Revoke all active browser sessions immediately:
 docker exec -it hub-backend python -m app.auth_cli revoke-sessions
+
+# List / rotate the scoped device tokens (extension, focus_guard, worker):
+docker exec -it hub-backend python -m app.auth_cli guard-tokens
+docker exec -it hub-backend python -m app.auth_cli guard-tokens rotate focus_guard
 ```
 
 ### Option 2 — `.env` / Dockge Environment Variables
@@ -149,7 +172,7 @@ Any secondary machine running Ollama on your LAN or Tailscale tailnet can regist
 MODELS=$(curl -fsSL http://127.0.0.1:11434/api/tags | jq -c '[.models[].name]')
 curl -X POST "http://<node-host>:8080/api/v1/models/ping" \
   -H "Content-Type: application/json" \
-  -H "X-Node-Guard-Token: <guard-token-from-focus-guard-window>" \
+  -H "X-Node-Guard-Token: <Workers token from Settings → System → Device tokens>" \
   -d "{\"provider_id\":\"remote-ollama\",\"provider_name\":\"Remote Ollama\",\"protocol\":\"ollama\",\"base_url\":\"http://<worker-tailscale-ip>:11434\",\"models\":$MODELS}"
 ```
 

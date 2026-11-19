@@ -1,10 +1,14 @@
 import os
+import subprocess
+import sys
 import tempfile
+from datetime import date, timedelta
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 _tmp_dir = tempfile.mkdtemp()
 os.environ["DATABASE_URL"] = f"sqlite:///{os.path.join(_tmp_dir, 'test_hub.db')}"
 os.environ["AI_MEMORY_PATH"] = os.path.join(_tmp_dir, "ai_memory.md")
@@ -15,7 +19,7 @@ os.environ["AI_NOTEBOOK_DIR"] = os.path.join(_tmp_dir, "notebook")
 os.environ["UPLOADS_DIR"] = os.path.join(_tmp_dir, "uploads")
 os.environ["EXTENSIONS_DIR"] = os.path.join(_tmp_dir, "extensions")
 os.environ["DESKTOP_WIDGETS_PATH"] = os.path.join(_tmp_dir, "desktop_widgets.json")
-os.environ["DOCS_DIR"] = "/home/user/docs"
+os.environ["DOCS_DIR"] = str(REPO_ROOT / "docs")
 os.environ["FOCUS_GUARD_PATH"] = os.path.join(_tmp_dir, "focus_guard.json")
 os.environ["SCHEDULE_SETTINGS_PATH"] = os.path.join(_tmp_dir, "schedule_settings.json")
 os.environ["OS_SETTINGS_PATH"] = os.path.join(_tmp_dir, "os_settings.json")
@@ -50,6 +54,61 @@ apps:
 
 from app.main import app  # noqa: E402
 from app.auth import auth_service  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Real-browser tests. Some tests drive a live Playwright tab (or Brave
+# specifically). Without one they would fail or hang, so they skip instead.
+# Set NODE_TESTS_REQUIRE_BROWSER=1 to turn those skips into failures (do this
+# anywhere a browser is supposed to exist, e.g. the athlon container).
+# ---------------------------------------------------------------------------
+_BROWSER_PROBE_CACHE = {}
+
+
+def _probe_chromium() -> str:
+    """'' if Playwright can launch headless Chromium, else the reason it can't."""
+    if "chromium" not in _BROWSER_PROBE_CACHE:
+        code = (
+            "from playwright.sync_api import sync_playwright\n"
+            "with sync_playwright() as p:\n"
+            "    p.chromium.launch(headless=True).close()\n"
+        )
+        try:
+            res = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=90)
+            lines = [ln.strip() for ln in res.stderr.splitlines() if ln.strip()]
+            useful = [ln for ln in lines if "Error" in ln or "exist" in ln or "not found" in ln] or lines or ["launch failed"]
+            reason = "" if res.returncode == 0 else useful[0][:200]
+        except Exception as exc:  # noqa: BLE001
+            reason = f"{exc.__class__.__name__}: {exc}"
+        _BROWSER_PROBE_CACHE["chromium"] = reason
+    return _BROWSER_PROBE_CACHE["chromium"]
+
+
+def _skip_or_fail(reason: str) -> None:
+    if os.environ.get("NODE_TESTS_REQUIRE_BROWSER") == "1":
+        pytest.fail(f"NODE_TESTS_REQUIRE_BROWSER=1 but {reason}")
+    pytest.skip(reason)
+
+
+@pytest.fixture()
+def requires_browser():
+    reason = _probe_chromium()
+    if reason:
+        _skip_or_fail(f"no launchable Playwright Chromium ({reason})")
+
+
+@pytest.fixture()
+def requires_brave(requires_browser):
+    from app.browser_stream import resolve_browser_binary
+
+    exe, _label = resolve_browser_binary()
+    if not exe or "brave" not in exe.lower():
+        _skip_or_fail("Brave is not installed (test asserts the Brave engine)")
+
+
+def _ics_stamp(days_from_today: int, hhmmss: str) -> str:
+    """Relative .ics timestamps: parse_ics_content drops events >14 days old (AGENT.md 7.6)."""
+    return (date.today() + timedelta(days=days_from_today)).strftime("%Y%m%d") + "T" + hhmmss
 
 
 @pytest.fixture()
@@ -130,7 +189,8 @@ def test_v6_clean_empty_start_and_honest_diagnostics(client: TestClient):
     res = client.get("/api/v1/system/status")
     assert res.status_code == 200
     body = res.json()
-    assert body["version"] == "7.0.0"
+    from app.config import settings as _settings
+    assert body["version"] == _settings.app_version  # one source of truth, not a stale literal
     assert body["scraper_runtime"]["daemon_active"] is False
     assert body["scraper_runtime"]["live_warm_sessions"] == 0
     assert body["unread_notifications"] == 0
@@ -275,13 +335,13 @@ def test_calendar_crud_recurring_and_ics_import_export(client: TestClient):
     assert len(created) == 6
     assert created[0]["series_id"] is not None
 
-    sample_ics = """BEGIN:VCALENDAR
+    sample_ics = f"""BEGIN:VCALENDAR
 VERSION:2.0
 PRODID:-//Calendar//EN
 BEGIN:VEVENT
 UID:event-991@example.edu
-DTSTART:20261027T153000
-DTEND:20261027T170000
+DTSTART:{_ics_stamp(5, "153000")}
+DTEND:{_ics_stamp(5, "170000")}
 SUMMARY:Engineering Design Review
 LOCATION:Room 102
 DESCRIPTION:Bring prototype notes
@@ -437,7 +497,10 @@ def test_youtube_focus_guard_and_guard_token_auth(client: TestClient, unauth_cli
     assert us.status_code == 200
     assert "X-Node-Guard-Token" in us.text
 
-    guard_tok = auth_service.get_or_create_guard_token()
+    guard_tok = auth_service.get_guard_token("focus_guard")
+    # The download embeds the focus-guard token, never the extension token.
+    assert guard_tok in us.text
+    assert auth_service.get_or_create_guard_token() not in us.text
     # Pin bedtime far into the future: this test asserts *trigger timing*, and the
     # "past bedtime" branch legitimately forces a nudge, which made the assertions
     # time-of-day dependent (any run after 22:00 local failed).
@@ -645,6 +708,7 @@ def test_v6_real_ai_calendar_edit_delete_and_apps_assist(client: TestClient):
     assert gm.json()["config"]["name"] == "GroupMe"
 
 
+@pytest.mark.usefixtures("requires_brave")
 def test_v6_server_browser_stream_websocket_and_ai_calibrate(client: TestClient):
     add_r = client.post(
         "/api/v1/apps",
@@ -779,6 +843,7 @@ def test_v71_comprehensive_settings_presets_ai_code_assist_and_core_safety(clien
     assert bad_css.status_code == 400
 
 
+@pytest.mark.usefixtures("requires_browser")
 def test_v81_initial_unreads_live_ws_pings_and_ap_classroom_assignments(client: TestClient):
     import json as _json
     import threading
@@ -932,6 +997,7 @@ def test_v81_initial_unreads_live_ws_pings_and_ap_classroom_assignments(client: 
         httpd.shutdown()
 
 
+@pytest.mark.usefixtures("requires_browser")
 def test_v82_importance_learning_multi_account_profiles_grades_and_live_enrich(client: TestClient):
     """
     Verifies all 6 Node v8.2 upgrades end-to-end:
@@ -1350,7 +1416,7 @@ def test_v90_streaming_full_tools_inbox_tasks_monitors_and_widgets(client: TestC
     ics_body = (
         "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"
         "BEGIN:VEVENT\r\nUID:sch-hw-99@schoology\r\n"
-        "DTSTART:20261026T235900\r\nDTEND:20261026T235900\r\n"
+        f"DTSTART:{_ics_stamp(4, '235900')}\r\nDTEND:{_ics_stamp(4, '235900')}\r\n"
         "SUMMARY:AP US History DBQ Essay Outline\r\n"
         "END:VEVENT\r\nEND:VCALENDAR\r\n"
     )
@@ -1392,6 +1458,7 @@ def test_v90_streaming_full_tools_inbox_tasks_monitors_and_widgets(client: TestC
     assert "Daily Work Cutoff &amp; Evening Quiet Buffer" in shell_html
 
 
+@pytest.mark.usefixtures("requires_browser")
 def test_v92_powerschool_all_courses_trends_history_and_assignments(client: TestClient):
     """
     Verifies the full v9.2 PowerSchool multi-course + trends + individual assignment suite:
@@ -1784,15 +1851,17 @@ def test_v92_powerschool_all_courses_trends_history_and_assignments(client: Test
 def test_v10_app_library_zero_preinstalled_and_1click_install(client: TestClient, tmp_path):
     """
     Production Release Pillar 3A:
-    - Fresh `scrapers/apps_config.yaml` ships with ZERO preinstalled apps (no hardcoded MS Teams/Outlook).
+    - A fresh install has ZERO preinstalled apps (no hardcoded MS Teams/Outlook); the registry is runtime data under data/.
     - `GET /api/v1/apps/catalog` exposes 17+ popular templates (Gmail, ProtonMail, Outlook, Teams, GroupMe, PowerSchool, Schoology, Canvas, Classroom).
     - `POST /api/v1/apps/install-template` installs selected apps on demand.
     """
     import yaml as _yaml
     from app.apps_manager import AppsConfigManager
 
-    repo_cfg = _yaml.safe_load(Path("/home/user/scrapers/apps_config.yaml").read_text(encoding="utf-8"))
-    assert repo_cfg.get("apps") == []
+    # No app registry is tracked in the repo any more: installed apps are user data.
+    assert not (REPO_ROOT / "scrapers").exists()
+    from app.config import settings as _settings
+    assert "scrapers" not in Path(type(_settings).model_fields["apps_config_path"].default).parts
 
     fresh_mgr = AppsConfigManager(config_path=tmp_path / "fresh_apps.yaml")
     assert fresh_mgr.list_apps() == []
@@ -1815,6 +1884,7 @@ def test_v10_app_library_zero_preinstalled_and_1click_install(client: TestClient
     client.delete(f"/api/v1/apps/{app_obj['slug']}")
 
 
+@pytest.mark.usefixtures("requires_browser")
 def test_v10_schoology_and_canvas_lms_extraction_and_task_sync(client: TestClient):
     """
     Production Release Pillar 1B & 1C:
@@ -2047,7 +2117,7 @@ def test_v10_multi_provider_models_ping_server_job_queue_and_shared_logs(client:
     from app.secretary import execute_secretary_tool
 
     # 1. Dynamic Model Ping (Guard-token OR authenticated session)
-    guard_tok = auth_service.get_or_create_guard_token()
+    guard_tok = auth_service.get_guard_token("worker")
     ping_res = client.post(
         "/api/v1/models/ping",
         headers={"X-Node-Guard-Token": guard_tok},
@@ -2169,7 +2239,7 @@ def test_v10_universal_social_focus_guard_resizable_widgets_and_extensions_sdk(c
         assert built_in in platform_ids
     assert any("ycombinator" in pid for pid in platform_ids)
 
-    guard_tok = auth_service.get_or_create_guard_token()
+    guard_tok = auth_service.get_guard_token("focus_guard")
     ig_hb = client.post(
         "/api/v1/focus-guard/heartbeat",
         headers={"X-Node-Guard-Token": guard_tok},
@@ -2791,7 +2861,7 @@ def test_v102_offline_event_classification_and_month_dates(client: TestClient):
 
 
 def test_v102_extension_guard_token_surface(client: TestClient, unauth_client: TestClient):
-    """The extension talks to three token-only routes; nothing else is exposed."""
+    """The extension token unlocks only the extension's own routes."""
     info = client.get("/api/v1/ext/info")
     assert info.status_code == 200
     token = info.json()["guard_token"]
@@ -2871,3 +2941,120 @@ def test_v102_user_tag_correction_beats_ai_pass(client: TestClient):
     client.post("/api/v1/notifications/ai-process?limit=20")
     row = [x for x in client.get("/api/v1/notifications?limit=200").json() if x["id"] == n["id"]][0]
     assert "Band" in row["tags_csv"]
+
+
+def test_v011_guard_tokens_are_scoped(client: TestClient, unauth_client: TestClient):
+    """Each guard token unlocks only its own routes; none can read or rotate tokens."""
+    listing = client.get("/api/v1/auth/guard-tokens")
+    assert listing.status_code == 200
+    body = listing.json()
+    # A fresh install never starts in legacy shared mode.
+    assert body["legacy_shared"] is False
+    toks = {s["id"]: s["token"] for s in body["scopes"]}
+    assert set(toks) == {"extension", "focus_guard", "worker"}
+    assert len(set(toks.values())) == 3
+    assert toks["extension"] == client.get("/api/v1/ext/info").json()["guard_token"]
+
+    def call(path: str, tok: str):
+        hdr = {"X-Node-Guard-Token": tok}
+        if path == "/api/v1/models/ping":
+            return unauth_client.post(path, headers=hdr, json={"provider_id": "scope-test", "protocol": "ollama", "base_url": "http://10.9.9.9:11434", "models": []})
+        return unauth_client.get(path, headers=hdr)
+
+    allowed = {
+        "extension": ["/api/v1/ext/bootstrap", "/api/v1/newtab/config"],
+        "focus_guard": ["/api/v1/focus-guard/status"],
+        "worker": ["/api/v1/models/ping"],
+    }
+    for scope, paths in allowed.items():
+        for path in paths:
+            assert call(path, toks[scope]).status_code == 200, (scope, path)
+            for other in toks:
+                if other != scope:
+                    assert call(path, toks[other]).status_code == 401, (other, "must not open", path)
+
+    # Guard tokens never reach session-only routes, including the token API itself.
+    for tok in toks.values():
+        for path in ("/api/v1/auth/guard-tokens", "/api/v1/notifications", "/api/v1/grades"):
+            assert unauth_client.get(path, headers={"X-Node-Guard-Token": tok}).status_code == 401
+        assert unauth_client.post("/api/v1/auth/guard-tokens/worker/rotate", headers={"X-Node-Guard-Token": tok}).status_code == 401
+
+    # Rotation: old token dies, new one works.
+    rotated = client.post("/api/v1/auth/guard-tokens/focus_guard/rotate").json()
+    new_focus = {s["id"]: s["token"] for s in rotated["scopes"]}["focus_guard"]
+    assert new_focus != toks["focus_guard"]
+    assert call("/api/v1/focus-guard/status", toks["focus_guard"]).status_code == 401
+    assert call("/api/v1/focus-guard/status", new_focus).status_code == 200
+    assert client.post("/api/v1/auth/guard-tokens/nope/rotate").status_code == 404
+
+
+def test_v011_guard_token_legacy_migration(client: TestClient, unauth_client: TestClient, tmp_path, monkeypatch):
+    """Installs that pre-date scoping keep working until the user ends legacy mode."""
+    from app.config import settings as _settings
+
+    # An existing install: an extension token file exists, no scoped store yet.
+    legacy_file = tmp_path / "guard_token.secret"
+    legacy_file.write_text("L" * 40, encoding="utf-8")
+    monkeypatch.setattr(_settings, "auth_guard_token_path", str(legacy_file))
+    monkeypatch.setattr(_settings, "auth_guard_tokens_path", "")
+    store = auth_service.ensure_guard_tokens()
+    assert store["legacy_shared"] is True
+    assert (tmp_path / "guard_tokens.json").is_file()
+    assert auth_service.get_guard_token("extension") == "L" * 40  # unchanged, the extension keeps working
+
+    old = {"X-Node-Guard-Token": "L" * 40}
+    assert unauth_client.get("/api/v1/focus-guard/status", headers=old).status_code == 200
+    # Legacy never widens past the old allowlist.
+    assert unauth_client.get("/api/v1/notifications", headers=old).status_code == 401
+
+    ended = client.post("/api/v1/auth/guard-tokens/end-legacy").json()
+    assert ended["legacy_shared"] is False
+    assert unauth_client.get("/api/v1/focus-guard/status", headers=old).status_code == 401
+    assert unauth_client.get("/api/v1/ext/bootstrap", headers=old).status_code == 200
+
+    # A brand-new install (no token file at all) starts scoped.
+    fresh = tmp_path / "fresh"
+    monkeypatch.setattr(_settings, "auth_guard_token_path", str(fresh / "guard_token.secret"))
+    assert auth_service.ensure_guard_tokens()["legacy_shared"] is False
+
+
+def test_v011_stream_websocket_closes_after_error(client: TestClient, monkeypatch):
+    """If the server browser can't start, the socket reports the error and closes instead of hanging."""
+    from app.browser_stream import browser_stream_manager
+
+    async def _boom(*_a, **_kw):
+        raise RuntimeError("browser failed to launch")
+
+    monkeypatch.setattr(browser_stream_manager, "get_or_open_tab", _boom)
+    with client.websocket_connect("/api/v1/stream/ws/anything") as ws:
+        first = ws.receive()
+        assert "browser failed to launch" in (first.get("text") or "")
+        closing = ws.receive()
+        assert closing["type"] == "websocket.close"
+        assert closing["code"] == 1011
+
+
+def test_v012_legacy_apps_registry_migrates_into_data(tmp_path):
+    """Pre-0.12 installs kept installed apps in the tracked scrapers/ file; boot moves them to data/."""
+    import yaml as _yaml
+    from app.apps_manager import AppsConfigManager
+
+    legacy = tmp_path / "legacy_apps_config.yaml"
+    legacy.write_text(_yaml.safe_dump({"global": {"poll_interval_seconds": 30}, "apps": [{"name": "Gmail", "url": "https://mail.google.com"}]}), encoding="utf-8")
+    empty_legacy = tmp_path / "empty.yaml"
+    empty_legacy.write_text("apps: []\n", encoding="utf-8")
+
+    mgr = AppsConfigManager(config_path=tmp_path / "data" / "apps_config.yaml")
+    assert mgr.migrate_legacy_config([str(tmp_path / "missing.yaml"), str(empty_legacy), str(legacy)]) == str(legacy)
+    assert [a["name"] for a in mgr.list_apps()] == ["Gmail"]
+    assert legacy.is_file()  # source is never deleted
+
+    # Idempotent: an existing registry is never overwritten.
+    mgr.add_or_replace_app({"name": "Canvas", "url": "https://canvas.instructure.com"})
+    assert mgr.migrate_legacy_config([str(legacy)]) is None
+    assert sorted(a["name"] for a in mgr.list_apps()) == ["Canvas", "Gmail"]
+
+    # Nothing to migrate from an empty legacy file.
+    fresh = AppsConfigManager(config_path=tmp_path / "fresh" / "apps_config.yaml")
+    assert fresh.migrate_legacy_config([str(empty_legacy)]) is None
+    assert not fresh.config_path.exists()

@@ -5,7 +5,7 @@ for an AI agent with **no prior context**. Read it fully before touching code.
 It tells you what the project is, what you may and may not touch, how to verify
 your work, and where the deeper docs live.
 
-- **Version:** 0.11.0
+- **Version:** 0.12.0
 - **Human:** one person (their host is `max@athlon`). You are their maintainer.
 - **Language of the product:** English. Code, comments and commits: English.
 - **Read next:** [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) (map + data model),
@@ -71,8 +71,9 @@ write runtime state to a tracked file. Every runtime path is derived from
 `settings.*_path` (see `backend/app/config.py`) — use those, don't invent paths.
 
 ### 3.2 Zero preinstalled apps
-`scrapers/apps_config.yaml` ships `apps: []`. Users install from the App Library
-or add a custom URL. Never seed demo apps, demo grades, demo notifications, or
+The installed-apps registry is runtime data (`data/apps_config.yaml`, via
+`settings.apps_config_path`) and starts empty. Nothing in the repo ships an app
+list. Users install from the App Library or add a custom URL. Never seed demo apps, demo grades, demo notifications, or
 fake data. `SEED_DEMO_DATA` must stay `false` in production.
 
 ### 3.3 All AI runs server-side
@@ -120,10 +121,16 @@ persistence story: **redeploy the code, keep `data/`.**
 ### 4.3 Tests — run this before you claim anything works
 
 ```bash
-cd /home/user && PYTHONPATH=/home/user/backend python3 -m pytest backend/tests/test_api.py -q
+# from the repo root (a venv is easiest: python3 -m venv .venv && . .venv/bin/activate)
+pip install -r backend/requirements.txt pytest pytest-timeout
+PYTHONPATH=backend python3 -m pytest backend/tests/test_api.py -q --timeout=120
 ```
 
-**Expected: 45 passed** (~30 s). If you add a feature, add a test. The suite is a
+**Expected: 49 passed** with a launchable browser, or **44 passed, 5 skipped**
+without one (~20 s). The 5 real-browser tests skip with the actual launch error
+when Playwright Chromium (or, for one test, Brave) isn't available. Wherever a
+browser *should* exist, run with `NODE_TESTS_REQUIRE_BROWSER=1` so a missing
+browser fails loudly instead of skipping. If you add a feature, add a test. The suite is a
 single file by design; it uses a temp dir per run and env-var overrides, so it
 never touches the real DB. Do not "fix" a failing test by weakening it — three
 of the failures found this way were real product bugs (see §7).
@@ -134,6 +141,9 @@ Some tests need Playwright + a browser:
 python3 -m playwright install chromium
 sudo python3 -m playwright install-deps chromium
 ```
+
+The Arena sandbox can only reach GitHub, npm and PyPI, so this download fails
+there. Browser tests skip in that environment; verify them on a real host.
 
 ---
 
@@ -157,6 +167,8 @@ All paths relative to repo root.
 | Schema | `backend/app/models.py`, `database.py` | SQLModel tables + boot migrations |
 | UI | `backend/app/ui/os_shell.html`, `os_app.js` | shell markup (Alpine `x-show` views) + methods/state |
 | Extension | `extension/` | MV3, served as a zip by the server |
+| Auth + guard tokens | `backend/app/auth.py`, `auth_cli.py` | sessions, `GUARD_SCOPES` (which token opens which route), CLI |
+| Apps registry | `backend/app/apps_manager.py` | installed apps (`data/apps_config.yaml`), App Library catalog |
 
 ### 5.1 UI conventions
 - Views are `<section x-show="win.view === '<name>'">` blocks inside
@@ -168,6 +180,10 @@ All paths relative to repo root.
 - Styling is Tailwind + custom classes (`studio-card`, `studio-subcard`,
   `badge-accent`, `win-tool-btn`). Accent is `#2bfbae` on dark slate. Icons are
   inline SVG via `nodeSvg(name, size)`, stroke width `1.8`.
+- **Tailwind is precompiled** (`dashboard/assets/tailwind.css`, no build step), so
+  only utility classes that already appear in that file work. A new class like
+  `bg-amber-400/10` silently does nothing. Grep the CSS (escape `/` and `[`)
+  before using a class you haven't seen elsewhere in the shell.
 
 ---
 
@@ -193,8 +209,18 @@ migrate a user's existing `hub.db`.
 ## 7. Hard-won knowledge — do not re-learn these
 
 ### 7.1 Sandbox / environment
+- The repo lives at `/home/user/node`, not `/home/user` (it moved once already and
+  left hardcoded paths behind). Derive paths from `__file__` or `settings`, never
+  from an absolute prefix.
 - Playwright browsers and Brave are **not** in the snapshot; reinstall after any
   environment reset.
+- **Real-browser UI checks in the Arena sandbox** (Playwright's CDN is blocked,
+  npm is not): `npm i @sparticuz/chromium playwright-core` in a scratch dir
+  outside the repo, call `executablePath()` once (writes `/tmp/chromium`), unpack
+  its bundled libs (`node -e` brotli-decompress `bin/al2023.tar.br`, then
+  `tar -x` into `/tmp/al2023`), and launch with
+  `LD_LIBRARY_PATH=/tmp/al2023/lib` plus the package's `args`. Good enough to
+  drive the shell; not used by the pytest browser probe.
 - The container clock can differ from the human's wall clock. Tests that depend on
   "now" must pin time through settings, not assume it.
 
@@ -224,7 +250,9 @@ types (`enum` + `options`, `bool`, `int`, `range`) and verify the round-trip.
 ### 7.6 `.ics` past-date blind spot
 `parse_ics_content` drops events older than 14 days *before* they reach the DB, so
 a fixture with fixed dates silently stops working weeks later. **Always use
-relative dates in calendar fixtures.**
+relative dates in calendar fixtures** (`_ics_stamp(days, "HHMMSS")` in the test
+file). This already bit once: `test_v90` hardcoded 2026-10-26 and started
+failing in mid-November.
 
 ### 7.7 External API contracts (verified, don't guess)
 - **Liquid d1**: `POST {base}/v1/systemone` with `state` + `questions` (TypeSafe
@@ -236,13 +264,31 @@ relative dates in calendar fixtures.**
 - **PowerSchool / Schoology / Canvas**: contracts are documented inline in
   `lms_connector.py`.
 
+### 7.8 Guard tokens are scoped — keep them that way
+Clients without a session cookie send `X-Node-Guard-Token`. There are three
+tokens (`extension`, `focus_guard`, `worker`). `auth.GUARD_SCOPES` maps each to
+its routes, and the auth middleware only accepts a token on its own scope's
+routes. To expose a route to a token client, add it to exactly one scope, and
+never to a scope whose token is embedded somewhere less trusted (the
+focus-guard userscript runs on third-party sites). The token-management API
+(`/api/v1/auth/guard-tokens*`) is session-only and deliberately **not** an AI
+tool, so secrets never land in chat logs or go to cloud providers. Installs
+upgraded from ≤0.11 may be in "legacy shared" mode until the user clicks
+*Finish migration* (Settings → System → Device tokens).
+
+### 7.9 The stream websocket must close on failure
+`handle_stream_websocket` reports errors as a `{"type":"error"}` frame and then
+closes with `1011`. Before 0.12 it never closed, so clients (and a test) hung
+forever when the browser couldn't launch. Keep the close.
+
 ---
 
 ## 8. Definition of done
 
 Before you report a change as complete:
 
-1. `pytest backend/tests/test_api.py -q` → **45+ passed**, 0 failed.
+1. `pytest backend/tests/test_api.py -q` → **0 failed** (49 passed with a browser,
+   44 passed + 5 skipped without one; more as tests are added).
 2. `python3 -c "import app.main"` with `PYTHONPATH=backend` imports cleanly.
 3. `node --check backend/app/ui/os_app.js` (and any extension JS) passes.
 4. If you touched UI, load it in a browser: no console errors, no `pageerror`.
@@ -253,10 +299,12 @@ Before you report a change as complete:
 
 ---
 
-## 9. Git workflow (the human pulls, you push)
+## 9. Git workflow (you open and merge PRs, the human pulls)
 
-The human manages the repo; you make commits. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
-for the exact first-commit and update commands.
+The human decided (2026-11): the maintainer agent works on its own branch, opens a
+pull request into `main`, checks it's green, and **merges it itself**. The human
+then pulls on the server. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the
+update commands.
 
 Branch and commit style used in this repo:
 
@@ -268,8 +316,10 @@ chore: bump to v0.11.0
 ```
 
 Rules:
-- One logical change per commit. Update the version in **one** place per release
-  (`config.py`, `main.py` FastAPI version, `extension/manifest.json`) plus README.
+- One logical change per commit. Per release, bump `settings.app_version` in
+  `config.py` (everything server-side reads it), `extension/manifest.json`, the
+  README title and `.env.example` header. A release is due whenever a change
+  needs a manual server step.
 - Update `CHANGELOG.md` for anything user-visible.
 - Never force-push. Never commit `data/` or `.env`.
 - If a change needs a manual server step (new env var, Node upgrade, a migration

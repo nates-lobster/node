@@ -8,8 +8,9 @@ to contradict one, surface the conflict instead of silently picking a side.
 
 ## Apps & installation
 
-- **Zero preinstalled apps.** `apps: []`. No MS Teams, no Outlook, no demo data.
-  A fresh install is empty by design. Demo seeds (`SEED_DEMO_DATA`) stay off.
+- **Zero preinstalled apps.** The installed-apps registry (`data/apps_config.yaml`)
+  starts empty. No MS Teams, no Outlook, no demo data. A fresh install is empty by
+  design. Demo seeds (`SEED_DEMO_DATA`) stay off.
 - Apps install from the **App Library** (17+ templates) or as a **custom URL**.
 - Custom Apps and Desktop Widgets are installable packages (`.nodeapp.json` /
   zip) with a documented `window.NodeOS` SDK. See `docs/APPS_AND_WIDGETS_SDK.md`.
@@ -111,7 +112,9 @@ to contradict one, surface the conflict instead of silently picking a side.
 | Coaching / free-budget bar in Tasks | plain to-do list |
 | "Notebook" naming for AI instructions | single `AI Instructions` section |
 | Hardcoded Bed/Wake entries in Next Up | chronological only |
-| Apps preinstalled "to be helpful" | `apps: []`, App Library |
+| Apps preinstalled "to be helpful" | empty registry, App Library |
+| The separate `scrapers/` container | in-process browser tabs + api-anything (removed in 0.12) |
+| One guard token shared by every client | per-client scoped tokens (0.12) |
 | Category-based inbox filters | tag-based |
 | Overwriting user tag corrections | corrections are authoritative |
 | Time estimates inside the instructions window | omit them |

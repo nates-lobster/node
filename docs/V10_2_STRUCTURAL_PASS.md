@@ -193,7 +193,7 @@ truth for the session, and the server mirrors it.
 
 ## 5. Browser extension (MV3)
 
-`/home/user/extension/` — a real Manifest V3 extension, downloadable from
+`extension/` — a real Manifest V3 extension, downloadable from
 **Settings → Browser Extension** as a zip (built from the live folder, so it
 always matches the running server).
 
@@ -205,7 +205,8 @@ always matches the running server).
   (PowerSchool, Schoology, Instructure, Classroom, Gmail, Outlook by default) and
   POSTs them to your server. Debounced to one sweep per 60 s, plus a periodic
   alarm.
-- **Guard token** — the extension talks to exactly three routes
+- **Guard token** *(0.12 note: tokens are now scoped per client — see
+  `docs/ARCHITECTURE.md` §2)* — the extension talks to exactly three routes
   (`/api/v1/ext/bootstrap`, `/api/v1/ext/quick-capture`, `/api/v1/ext/cookies`)
   authenticated with `X-Node-Guard-Token`. Nothing else is exposed, and a
   cookieless caller is still rejected.

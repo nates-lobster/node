@@ -10,7 +10,7 @@ DEFAULT_DATA_DIR = BASE_ROOT / "data"
 
 class Settings(BaseSettings):
     app_name: str = "Node"
-    app_version: str = "0.11.0"
+    app_version: str = "0.12.0"
     environment: str = "production"
     local_timezone: str = Field(
         default="America/New_York",
@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     )
     auth_credentials_path: str = str(DEFAULT_DATA_DIR / "auth_credentials.json")
     auth_guard_token_path: str = str(DEFAULT_DATA_DIR / "auth_guard_token.txt")
+    # Scoped guard tokens (focus_guard, worker) + legacy flag. Empty = a
+    # `guard_tokens.json` next to auth_guard_token_path.
+    auth_guard_tokens_path: str = ""
     auth_session_days: int = Field(
         default=7,
         validation_alias=AliasChoices("AUTH_SESSION_DAYS", "NODE_AUTH_SESSION_DAYS"),
@@ -61,8 +64,15 @@ class Settings(BaseSettings):
     ai_providers_path: str = str(DEFAULT_DATA_DIR / "ai_providers.json")
     extensions_dir: str = str(DEFAULT_DATA_DIR / "extensions")
 
-    # Shared Scraper YAML Config & Runtime State Paths
-    apps_config_path: str = str(BASE_ROOT / "scrapers" / "apps_config.yaml")
+    # Installed-apps registry (written by the App Library / AI) + browser runtime state.
+    # Runtime data, so it lives under data/ — never in a tracked file.
+    apps_config_path: str = str(DEFAULT_DATA_DIR / "apps_config.yaml")
+    # Where pre-0.12 installs kept the registry (tracked scrapers/ file or its
+    # old container mount). Read once on boot to migrate, never written.
+    legacy_apps_config_paths: List[str] = [
+        str(BASE_ROOT / "scrapers" / "apps_config.yaml"),
+        "/config/apps_config.yaml",
+    ]
     browser_profile_dir: str = str(DEFAULT_DATA_DIR / "browser_profile")
     browser_profiles_root: str = str(DEFAULT_DATA_DIR / "browser_profiles")
     browser_executable_path: str = ""  # Optional custom binary; auto-prefers /usr/bin/brave-browser

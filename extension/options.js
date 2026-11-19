@@ -28,9 +28,11 @@ async function save() {
   // Keep the server's own setting in agreement with the extension.
   try {
     if (patch.newtabMode) {
+      const headers = { "Content-Type": "application/json" };
+      if (patch.guardToken) headers["X-Node-Guard-Token"] = patch.guardToken;
       await fetch(`${patch.nodeBaseUrl}/api/v1/newtab/config`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ mode: patch.newtabMode })
       });
     }

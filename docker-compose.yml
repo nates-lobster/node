@@ -31,7 +31,7 @@ services:
       NODE_AUTH_PASSWORD: ${NODE_AUTH_PASSWORD:-changeme}
       NODE_AUTH_PASSWORD_HASH: ${NODE_AUTH_PASSWORD_HASH:-}
       NODE_AUTH_SESSION_DAYS: ${NODE_AUTH_SESSION_DAYS:-7}
-      APPS_CONFIG_PATH: /config/apps_config.yaml
+      APPS_CONFIG_PATH: /data/apps_config.yaml
       BROWSER_PROFILE_DIR: /data/browser_profile
       BROWSER_PROFILES_ROOT: /data/browser_profiles
       SCRAPER_STATE_PATH: /data/state/scraper_state.json
@@ -61,7 +61,6 @@ services:
       - ./data/sqlite:/data
       - ./data/browser_profile:/data/browser_profile
       - ./data/scraper_state:/data/state
-      - ./scrapers/apps_config.yaml:/config/apps_config.yaml
       - ./dashboard/wallpapers:/dashboard/wallpapers:ro
       - ./docs:/docs:ro
       - ${TAILSCALE_SOCK_DIR:-./data/tailscale_sock}:/host_tailscale:ro

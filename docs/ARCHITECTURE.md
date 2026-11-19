@@ -37,9 +37,21 @@ cron scheduler.
    - `PUBLIC_EXACT_PATHS` (lock screen, login, `/newtab`, `/favicon*`) bypass auth.
    - `/wallpapers/*` and `/assets/*` are public so the lock screen can render
      ambient art — these expose zero personal data.
-   - `GUARD_TOKEN_ALLOWED_PATHS` accept `X-Node-Guard-Token` instead of a session.
-     This is how the **browser extension** and the **focus-guard extension** talk
-     to the server without a cookie (different origin).
+   - Routes listed in `auth.GUARD_SCOPES` accept `X-Node-Guard-Token` instead of
+     a session, but only the token **for that route's scope**:
+
+     | Scope | Used by | Routes |
+     |---|---|---|
+     | `extension` | Node MV3 extension | `/api/v1/ext/*`, `/api/v1/newtab/config` |
+     | `focus_guard` | focus-guard extension + userscript (token embedded on download) | `/api/v1/focus-guard/{heartbeat,respond,justify,status}` |
+     | `worker` | remote Ollama workers, ping scripts | `/api/v1/models/ping`, `/api/v1/ping` |
+
+     Tokens live in `data/` (`auth_guard_token_path` for `extension`, a sibling
+     `guard_tokens.json` for the rest). Upgraded installs may be in *legacy shared*
+     mode, where the extension token also opens the other two scopes until the user
+     ends it. Tokens are listed, rotated and migrated via the session-only
+     `/api/v1/auth/guard-tokens*` API (Settings → System → Device tokens) or
+     `python -m app.auth_cli guard-tokens`.
    - Everything else requires a valid session token (cookie or `X-Node-Session`).
 2. Route handler → service module → SQLModel tables.
 3. Response gets `Cache-Control: no-store` (API) or `no-store` (HTML shell) so a
@@ -213,10 +225,12 @@ matches the running server).
 - `chrome_url_overrides.newtab` → `newtab.html`
 - Three surfaces: `newtab.html` (modes), `popup.html` (status), `options.html`
   (server URL, guard token, cookie domains)
-- Talks to exactly three server routes via `X-Node-Guard-Token`:
-  `/api/v1/ext/bootstrap`, `/api/v1/ext/quick-capture`, `/api/v1/ext/cookies`
+- Talks to the server only through the `extension` guard-token scope:
+  `/api/v1/ext/bootstrap`, `/ext/quick-capture`, `/ext/cookies` (plus its alias
+  `/ext/session/import`), `/ext/info`, `/ext/package.zip`, and `/api/v1/newtab/config`.
 
-Anything you add to the extension must not widen that token's blast radius.
+Anything you add to the extension must not widen that token's blast radius. A
+new route goes into `GUARD_SCOPES["extension"]`, never into a broader scope.
 
 ---
 
@@ -224,7 +238,10 @@ Anything you add to the extension must not widen that token's blast radius.
 
 | Symptom | Likely cause |
 |---|---|
-| `401` on an API call that works elsewhere | path not in `PUBLIC_EXACT_PATHS` / guard allowlist, or expired session |
+| `401` on an API call that works elsewhere | path not in `PUBLIC_EXACT_PATHS` / `GUARD_SCOPES`, the wrong scope's token, or expired session |
+| Focus guard stopped counting after an upgrade | it still embeds an old token: re-download it (Focus Guard window), or legacy mode was ended before re-downloading |
+| Installed apps vanished after `git pull` | pre-0.12 registry lived in `scrapers/apps_config.yaml`; copy it to `data/` (see CHANGELOG 0.12.0) |
+| Stream window shows "Error" right away | server browser failed to launch (no Brave/Chromium); the socket now closes instead of hanging |
 | Setting doesn't persist | wrong `type` in `os_settings` (silently dropped) |
 | Tag rename 400 "not found" | stale `data/inbox_*.json` from an older run, or import-time path binding |
 | Event gets today's date | month/day not parsed, or gate offline and no deterministic fallback |

@@ -19,6 +19,7 @@ data/
 **/auth_credentials.json
 **/auth_guard_token.txt
 **/guard_token.secret
+**/guard_tokens.json
 **/serve-token
 **/os_settings.json
 **/os_presets.json
@@ -26,6 +27,7 @@ data/
 **/focus_guard.json
 **/schedule_settings.json
 **/api_bridges.json
+**/apps_config.yaml
 **/inbox_tags.json
 **/inbox_learning.json
 **/inbox_filters.json

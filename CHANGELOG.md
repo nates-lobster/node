@@ -5,6 +5,75 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.12.0 — 2026-11-19
+
+Security and maintenance. First release managed by the maintainer agent through
+pull requests.
+
+### Manual steps
+- **Only if you installed apps from the App Library:** the installed-apps list
+  moved from the tracked `scrapers/apps_config.yaml` into `data/`. Your server's
+  copy has local edits, so `git pull --ff-only` will refuse until you move it.
+  Run this in the repo **before** pulling:
+  ```bash
+  mkdir -p data/sqlite
+  cp -n scrapers/apps_config.yaml data/sqlite/apps_config.yaml   # Docker: /data = ./data/sqlite
+  # (plain systemd/venv installs: cp -n scrapers/apps_config.yaml data/apps_config.yaml)
+  git checkout -- scrapers/apps_config.yaml
+  git pull --ff-only && docker compose up -d --build
+  ```
+  If you never installed an app, just pull.
+- **Device tokens (no action required to keep working):** after upgrading,
+  open **Settings → System → Device tokens**. Re-download the focus guard
+  (Focus Guard window) and point worker scripts at the **Workers** token, then
+  click **Finish migration**. Until then the old shared token keeps working
+  everywhere it used to.
+
+### Security
+- **Guard tokens are scoped per client.** One shared `X-Node-Guard-Token` used to
+  open 12 routes for every token holder. A token embedded in the focus-guard
+  userscript (which runs on third-party sites) could therefore read inbox
+  titles and tasks, and push cookies into the bridge store. There are now three
+  tokens, each limited to its own routes:
+  `extension` (`/ext/*`, `/newtab/config`), `focus_guard`
+  (`/focus-guard/{heartbeat,respond,justify,status}`) and `worker`
+  (`/models/ping`, `/ping`). They can be rotated individually. No token can read
+  or rotate tokens, and token management is deliberately not an AI tool.
+
+### Added
+- Settings → System → **Device tokens**: list, copy, rotate (two-click
+  confirm), finish migration.
+- `auth_cli status`, `auth_cli revoke-sessions` (documented before, but missing)
+  and `auth_cli guard-tokens [list|rotate <scope>|end-legacy]`.
+
+### Changed
+- The installed-apps registry is runtime data at `data/apps_config.yaml`
+  (`APPS_CONFIG_PATH=/data/apps_config.yaml` in compose). On boot, a non-empty
+  legacy registry is copied over if the new one is missing (never overwritten,
+  source never deleted).
+- Removed `scrapers/` (standalone scraper container no longer used by compose).
+- Version is defined once (`settings.app_version`). The FastAPI app and the
+  status endpoints read it.
+
+### Fixed
+- The stream websocket closes (code 1011) after reporting an error, so a window
+  whose server browser can't start shows "Error" instead of hanging forever.
+- `/api/v1/health` and `/api/v1/system/status` reported version `7.0.0`.
+- The extension's `/api/v1/newtab/config` calls were not reachable with its
+  token (they only worked with a session cookie). Its options page now sends
+  the token.
+- Tests: no hardcoded `/home/user` paths. Real-browser tests skip with the
+  launch error when no browser exists (`NODE_TESTS_REQUIRE_BROWSER=1` makes that
+  fail instead). Calendar fixtures use relative dates (`test_v90` had expired).
+- `start_preview.sh` no longer assumes the repo is at `/home/user`.
+
+### Verified
+- 49 tests: 44 passed + 5 skipped (no browser in the agent sandbox); import and
+  `node --check` clean. The real-browser tests still need a run on athlon:
+  `NODE_TESTS_REQUIRE_BROWSER=1 pytest backend/tests/test_api.py -q`.
+
+---
+
 ## 0.11.0 — 2026-10-22
 
 First git-versioned release. Renumbered from the internal `v10.x` line; the

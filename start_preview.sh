@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
+# Sandbox convenience launcher (not the production entrypoint — see docs/DEPLOYMENT.md).
+# Installs backend deps if missing, tries to provide a browser, then runs uvicorn on :8080.
 set -euo pipefail
 
-cd /home/user
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
 
-if ! python3 -c "import fastapi, uvicorn, sqlmodel, httpx, pydantic_settings, yaml, playwright, websockets" >/dev/null 2>&1; then
+PYTHON="python3"
+if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+  PYTHON="$REPO_ROOT/.venv/bin/python"
+fi
+
+if ! "$PYTHON" -c "import fastapi, uvicorn, sqlmodel, httpx, pydantic_settings, yaml, playwright, websockets" >/dev/null 2>&1; then
   echo "[start_preview] Installing backend Python dependencies..."
-  pip install --quiet -r /home/user/backend/requirements.txt
+  "$PYTHON" -m pip install --quiet -r "$REPO_ROOT/backend/requirements.txt"
 fi
 
 if ! command -v brave-browser >/dev/null 2>&1; then
@@ -20,13 +28,14 @@ if ! command -v brave-browser >/dev/null 2>&1; then
   fi
 fi
 
-if ! command -v brave-browser >/dev/null 2>&1 && [ ! -d "/home/user/.cache/ms-playwright" ]; then
+PW_CACHE="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+if ! command -v brave-browser >/dev/null 2>&1 && [ ! -d "$PW_CACHE" ]; then
   echo "[start_preview] Ensuring Playwright runtime dependencies..."
-  python3 -m playwright install chromium --with-deps >/dev/null 2>&1 || true
+  "$PYTHON" -m playwright install chromium --with-deps >/dev/null 2>&1 || true
 fi
 
-export PYTHONPATH=/home/user/backend
-exec python3 -m uvicorn app.main:app \
+export PYTHONPATH="$REPO_ROOT/backend"
+exec "$PYTHON" -m uvicorn app.main:app \
   --host 0.0.0.0 \
   --port 8080 \
   --proxy-headers \

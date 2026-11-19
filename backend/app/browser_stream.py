@@ -2478,6 +2478,12 @@ class ServerBrowserStreamManager:
                 await safe_send_json({"type": "error", "message": str(exc)})
             except Exception:
                 pass
+            # Close after reporting, otherwise the client waits forever for
+            # frames that will never come (e.g. the browser failed to launch).
+            try:
+                await websocket.close(code=1011)
+            except Exception:
+                pass
         finally:
             if warmup_task is not None and not warmup_task.done():
                 warmup_task.cancel()

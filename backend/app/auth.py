@@ -18,6 +18,47 @@ SESSION_COOKIE_NAME = "node_session"
 PBKDF2_ITERATIONS = 600_000
 
 
+# Which routes each guard-token scope unlocks. A route belongs to exactly one
+# scope. Anything not listed here requires a real login session.
+GUARD_SCOPES: Dict[str, Dict[str, object]] = {
+    "extension": {
+        "label": "Browser extension",
+        "used_by": "Node MV3 extension (new tab, quick capture, cookie sync). Paste into the extension's Settings.",
+        "routes": {
+            "/api/v1/ext/bootstrap",
+            "/api/v1/ext/info",
+            "/api/v1/ext/package.zip",
+            "/api/v1/ext/quick-capture",
+            "/api/v1/ext/cookies",
+            "/api/v1/ext/session/import",
+            "/api/v1/newtab/config",
+        },
+    },
+    "focus_guard": {
+        "label": "Focus guard",
+        "used_by": "Focus guard extension and userscript. Embedded automatically when you download them.",
+        "routes": {
+            "/api/v1/focus-guard/heartbeat",
+            "/api/v1/focus-guard/respond",
+            "/api/v1/focus-guard/justify",
+            "/api/v1/focus-guard/status",
+        },
+    },
+    "worker": {
+        "label": "Workers",
+        "used_by": "Remote Ollama workers and scripts that push model lists or notification pings.",
+        "routes": {
+            "/api/v1/models/ping",
+            "/api/v1/ping",
+        },
+    },
+}
+
+GUARD_ROUTE_SCOPES: Dict[str, str] = {
+    route: scope for scope, meta in GUARD_SCOPES.items() for route in meta["routes"]  # type: ignore[union-attr]
+}
+
+
 def hash_password_pbkdf2(password: str, salt_hex: Optional[str] = None) -> str:
     salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
     dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS)
@@ -278,26 +319,183 @@ class ServerAuthService:
                 samesite="lax",
             )
 
-    def get_or_create_guard_token(self) -> str:
+    # ------------------------------------------------------------------
+    # Scoped guard tokens
+    #
+    # Clients that cannot hold a session cookie (the MV3 extension, the focus
+    # guard extension/userscript, remote model workers) authenticate with an
+    # `X-Node-Guard-Token` header instead. Each client family has its OWN token
+    # that unlocks only its own routes, so a token leaked from one place (e.g.
+    # a userscript embedded in YouTube pages) cannot read the inbox or push
+    # cookies into the bridge store.
+    #
+    # The `extension` token is the original single token and keeps its file
+    # (`settings.auth_guard_token_path`) so an already-configured extension
+    # keeps working. Installs that pre-date scoping start in "legacy shared"
+    # mode: the extension token is also accepted on the focus-guard and worker
+    # routes until the user ends it (Settings -> System -> Device tokens, or
+    # `auth_cli guard-tokens end-legacy`). Fresh installs never enter it.
+    # ------------------------------------------------------------------
+
+    @property
+    def guard_tokens_path(self) -> Path:
+        explicit = str(getattr(settings, "auth_guard_tokens_path", "") or "").strip()
+        if explicit:
+            return Path(explicit)
+        return self.guard_token_path.with_name("guard_tokens.json")
+
+    @staticmethod
+    def _write_secret_file(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(content, encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        tmp.replace(path)
+
+    def _read_extension_token(self) -> Optional[str]:
         p = self.guard_token_path
         if p.is_file():
             tok = p.read_text(encoding="utf-8").strip()
             if len(tok) >= 24:
                 return tok
+        return None
+
+    def get_or_create_guard_token(self) -> str:
+        """The `extension` scope token (the original single guard token)."""
+        tok = self._read_extension_token()
+        if tok:
+            return tok
         tok = secrets.token_urlsafe(32)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(tok, encoding="utf-8")
-        try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
+        self._write_secret_file(self.guard_token_path, tok)
         return tok
 
-    def verify_guard_token(self, candidate: Optional[str]) -> bool:
-        if not candidate:
+    def _load_guard_store(self) -> Dict[str, object]:
+        p = self.guard_tokens_path
+        if p.is_file():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
+        return {}
+
+    def _save_guard_store(self, data: Dict[str, object]) -> None:
+        self._write_secret_file(self.guard_tokens_path, json.dumps(data, indent=2))
+
+    def ensure_guard_tokens(self) -> Dict[str, object]:
+        """Create any missing scoped tokens. Idempotent; called on boot and lazily."""
+        store = self._load_guard_store()
+        changed = False
+        if not store:
+            # First boot with scoping: an existing extension token means this
+            # install already handed that one token to every client.
+            store = {
+                "version": 1,
+                "legacy_shared": self._read_extension_token() is not None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            changed = True
+        for scope in GUARD_SCOPES:
+            if scope == "extension":
+                continue
+            tok = str(store.get(scope) or "")
+            if len(tok) < 24:
+                store[scope] = secrets.token_urlsafe(32)
+                changed = True
+        if changed:
+            self._save_guard_store(store)
+        self.get_or_create_guard_token()
+        return store
+
+    def get_guard_token(self, scope: str) -> str:
+        if scope not in GUARD_SCOPES:
+            raise ValueError(f"Unknown guard token scope: {scope}")
+        if scope == "extension":
+            return self.get_or_create_guard_token()
+        return str(self.ensure_guard_tokens()[scope])
+
+    def guard_legacy_shared(self) -> bool:
+        return bool(self.ensure_guard_tokens().get("legacy_shared"))
+
+    def end_guard_legacy(self) -> None:
+        store = self.ensure_guard_tokens()
+        if store.get("legacy_shared"):
+            store["legacy_shared"] = False
+            store["legacy_ended_at"] = datetime.now(timezone.utc).isoformat()
+            self._save_guard_store(store)
+
+    def rotate_guard_token(self, scope: str) -> str:
+        if scope not in GUARD_SCOPES:
+            raise ValueError(f"Unknown guard token scope: {scope}")
+        tok = secrets.token_urlsafe(32)
+        if scope == "extension":
+            self._write_secret_file(self.guard_token_path, tok)
+            # The shared legacy value no longer exists, so legacy mode is over.
+            self.end_guard_legacy()
+            return tok
+        store = self.ensure_guard_tokens()
+        store[scope] = tok
+        self._save_guard_store(store)
+        return tok
+
+    def describe_guard_tokens(self) -> Dict[str, object]:
+        store = self.ensure_guard_tokens()
+        return {
+            "legacy_shared": bool(store.get("legacy_shared")),
+            "scopes": [
+                {
+                    "id": scope,
+                    "label": meta["label"],
+                    "used_by": meta["used_by"],
+                    "routes": sorted(meta["routes"]),
+                    "token": self.get_guard_token(scope),
+                }
+                for scope, meta in GUARD_SCOPES.items()
+            ],
+        }
+
+    @staticmethod
+    def guard_scope_for_path(path: str) -> Optional[str]:
+        return GUARD_ROUTE_SCOPES.get(path)
+
+    def verify_guard_token(self, candidate: Optional[str], scope: str = "extension") -> bool:
+        """True only if `candidate` is the token for `scope` (or the legacy shared token)."""
+        if not candidate or scope not in GUARD_SCOPES:
             return False
-        expected = self.get_or_create_guard_token()
-        return hmac.compare_digest(candidate.strip().encode("utf-8"), expected.encode("utf-8"))
+        got = candidate.strip().encode("utf-8")
+        if hmac.compare_digest(got, self.get_guard_token(scope).encode("utf-8")):
+            return True
+        if scope != "extension" and self.guard_legacy_shared():
+            return hmac.compare_digest(got, self.get_or_create_guard_token().encode("utf-8"))
+        return False
+
+    def revoke_all_sessions(self, db: Session) -> int:
+        """Server-side only (auth_cli). Deletes every browser session."""
+        rows = db.exec(select(AuthSession)).all()
+        for row in rows:
+            db.delete(row)
+        db.commit()
+        return len(rows)
+
+    def credential_source(self) -> str:
+        cred_file = self.credentials_path
+        if cred_file.is_file():
+            try:
+                data = json.loads(cred_file.read_text(encoding="utf-8"))
+                if str(data.get("password_hash") or "").startswith("pbkdf2_sha256$"):
+                    return f"credentials file ({cred_file})"
+            except Exception:
+                pass
+        env_hash = (os.environ.get("NODE_AUTH_PASSWORD_HASH") or os.environ.get("AUTH_PASSWORD_HASH") or settings.auth_password_hash).strip()
+        if env_hash.startswith("pbkdf2_sha256$"):
+            return "NODE_AUTH_PASSWORD_HASH environment variable"
+        if os.environ.get("NODE_AUTH_PASSWORD") or os.environ.get("AUTH_PASSWORD"):
+            return "NODE_AUTH_PASSWORD environment variable"
+        return "built-in default (admin / changeme) - change this before exposing the server"
 
 
 auth_service = ServerAuthService()
