@@ -254,7 +254,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.11.0",
+    version=settings.app_version,
     description="Node — Personal WebOS",
     lifespan=lifespan,
     docs_url=None,
@@ -617,7 +617,7 @@ def health_check(
         "status": "ok",
         "service": "node-backend",
         "app": "Node",
-        "version": "7.0.0",
+        "version": settings.app_version,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -754,7 +754,7 @@ async def system_status(
     return {
         "status": "ok",
         "app": "Node",
-        "version": "7.0.0",
+        "version": settings.app_version,
         "uptime_seconds": int(time.monotonic() - BOOT_TIME),
         "server_time": datetime.now(timezone.utc).isoformat(),
         "total_pings_received": int(total_pings),

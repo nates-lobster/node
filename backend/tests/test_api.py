@@ -189,7 +189,8 @@ def test_v6_clean_empty_start_and_honest_diagnostics(client: TestClient):
     res = client.get("/api/v1/system/status")
     assert res.status_code == 200
     body = res.json()
-    assert body["version"] == "7.0.0"
+    from app.config import settings as _settings
+    assert body["version"] == _settings.app_version  # one source of truth, not a stale literal
     assert body["scraper_runtime"]["daemon_active"] is False
     assert body["scraper_runtime"]["live_warm_sessions"] == 0
     assert body["unread_notifications"] == 0
