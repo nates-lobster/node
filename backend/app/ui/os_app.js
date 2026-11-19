@@ -2233,7 +2233,8 @@ document.addEventListener("alpine:init", () => {
           this.lockSession();
           return;
         }
-        w.streamStatus = "Paused";
+        // Keep a server-reported error visible instead of masking it as "Paused".
+        if (w.streamStatus !== "Error") w.streamStatus = "Paused";
       };
 
       ws.onerror = () => {
