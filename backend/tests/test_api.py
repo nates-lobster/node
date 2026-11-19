@@ -496,7 +496,10 @@ def test_youtube_focus_guard_and_guard_token_auth(client: TestClient, unauth_cli
     assert us.status_code == 200
     assert "X-Node-Guard-Token" in us.text
 
-    guard_tok = auth_service.get_or_create_guard_token()
+    guard_tok = auth_service.get_guard_token("focus_guard")
+    # The download embeds the focus-guard token, never the extension token.
+    assert guard_tok in us.text
+    assert auth_service.get_or_create_guard_token() not in us.text
     # Pin bedtime far into the future: this test asserts *trigger timing*, and the
     # "past bedtime" branch legitimately forces a nudge, which made the assertions
     # time-of-day dependent (any run after 22:00 local failed).
@@ -2111,7 +2114,7 @@ def test_v10_multi_provider_models_ping_server_job_queue_and_shared_logs(client:
     from app.secretary import execute_secretary_tool
 
     # 1. Dynamic Model Ping (Guard-token OR authenticated session)
-    guard_tok = auth_service.get_or_create_guard_token()
+    guard_tok = auth_service.get_guard_token("worker")
     ping_res = client.post(
         "/api/v1/models/ping",
         headers={"X-Node-Guard-Token": guard_tok},
@@ -2233,7 +2236,7 @@ def test_v10_universal_social_focus_guard_resizable_widgets_and_extensions_sdk(c
         assert built_in in platform_ids
     assert any("ycombinator" in pid for pid in platform_ids)
 
-    guard_tok = auth_service.get_or_create_guard_token()
+    guard_tok = auth_service.get_guard_token("focus_guard")
     ig_hb = client.post(
         "/api/v1/focus-guard/heartbeat",
         headers={"X-Node-Guard-Token": guard_tok},
@@ -2855,7 +2858,7 @@ def test_v102_offline_event_classification_and_month_dates(client: TestClient):
 
 
 def test_v102_extension_guard_token_surface(client: TestClient, unauth_client: TestClient):
-    """The extension talks to three token-only routes; nothing else is exposed."""
+    """The extension token unlocks only the extension's own routes."""
     info = client.get("/api/v1/ext/info")
     assert info.status_code == 200
     token = info.json()["guard_token"]
@@ -2935,6 +2938,81 @@ def test_v102_user_tag_correction_beats_ai_pass(client: TestClient):
     client.post("/api/v1/notifications/ai-process?limit=20")
     row = [x for x in client.get("/api/v1/notifications?limit=200").json() if x["id"] == n["id"]][0]
     assert "Band" in row["tags_csv"]
+
+
+def test_v011_guard_tokens_are_scoped(client: TestClient, unauth_client: TestClient):
+    """Each guard token unlocks only its own routes; none can read or rotate tokens."""
+    listing = client.get("/api/v1/auth/guard-tokens")
+    assert listing.status_code == 200
+    body = listing.json()
+    # A fresh install never starts in legacy shared mode.
+    assert body["legacy_shared"] is False
+    toks = {s["id"]: s["token"] for s in body["scopes"]}
+    assert set(toks) == {"extension", "focus_guard", "worker"}
+    assert len(set(toks.values())) == 3
+    assert toks["extension"] == client.get("/api/v1/ext/info").json()["guard_token"]
+
+    def call(path: str, tok: str):
+        hdr = {"X-Node-Guard-Token": tok}
+        if path == "/api/v1/models/ping":
+            return unauth_client.post(path, headers=hdr, json={"provider_id": "scope-test", "protocol": "ollama", "base_url": "http://10.9.9.9:11434", "models": []})
+        return unauth_client.get(path, headers=hdr)
+
+    allowed = {
+        "extension": ["/api/v1/ext/bootstrap", "/api/v1/newtab/config"],
+        "focus_guard": ["/api/v1/focus-guard/status"],
+        "worker": ["/api/v1/models/ping"],
+    }
+    for scope, paths in allowed.items():
+        for path in paths:
+            assert call(path, toks[scope]).status_code == 200, (scope, path)
+            for other in toks:
+                if other != scope:
+                    assert call(path, toks[other]).status_code == 401, (other, "must not open", path)
+
+    # Guard tokens never reach session-only routes, including the token API itself.
+    for tok in toks.values():
+        for path in ("/api/v1/auth/guard-tokens", "/api/v1/notifications", "/api/v1/grades"):
+            assert unauth_client.get(path, headers={"X-Node-Guard-Token": tok}).status_code == 401
+        assert unauth_client.post("/api/v1/auth/guard-tokens/worker/rotate", headers={"X-Node-Guard-Token": tok}).status_code == 401
+
+    # Rotation: old token dies, new one works.
+    rotated = client.post("/api/v1/auth/guard-tokens/focus_guard/rotate").json()
+    new_focus = {s["id"]: s["token"] for s in rotated["scopes"]}["focus_guard"]
+    assert new_focus != toks["focus_guard"]
+    assert call("/api/v1/focus-guard/status", toks["focus_guard"]).status_code == 401
+    assert call("/api/v1/focus-guard/status", new_focus).status_code == 200
+    assert client.post("/api/v1/auth/guard-tokens/nope/rotate").status_code == 404
+
+
+def test_v011_guard_token_legacy_migration(client: TestClient, unauth_client: TestClient, tmp_path, monkeypatch):
+    """Installs that pre-date scoping keep working until the user ends legacy mode."""
+    from app.config import settings as _settings
+
+    # An existing install: an extension token file exists, no scoped store yet.
+    legacy_file = tmp_path / "guard_token.secret"
+    legacy_file.write_text("L" * 40, encoding="utf-8")
+    monkeypatch.setattr(_settings, "auth_guard_token_path", str(legacy_file))
+    monkeypatch.setattr(_settings, "auth_guard_tokens_path", "")
+    store = auth_service.ensure_guard_tokens()
+    assert store["legacy_shared"] is True
+    assert (tmp_path / "guard_tokens.json").is_file()
+    assert auth_service.get_guard_token("extension") == "L" * 40  # unchanged, the extension keeps working
+
+    old = {"X-Node-Guard-Token": "L" * 40}
+    assert unauth_client.get("/api/v1/focus-guard/status", headers=old).status_code == 200
+    # Legacy never widens past the old allowlist.
+    assert unauth_client.get("/api/v1/notifications", headers=old).status_code == 401
+
+    ended = client.post("/api/v1/auth/guard-tokens/end-legacy").json()
+    assert ended["legacy_shared"] is False
+    assert unauth_client.get("/api/v1/focus-guard/status", headers=old).status_code == 401
+    assert unauth_client.get("/api/v1/ext/bootstrap", headers=old).status_code == 200
+
+    # A brand-new install (no token file at all) starts scoped.
+    fresh = tmp_path / "fresh"
+    monkeypatch.setattr(_settings, "auth_guard_token_path", str(fresh / "guard_token.secret"))
+    assert auth_service.ensure_guard_tokens()["legacy_shared"] is False
 
 
 def test_v011_stream_websocket_closes_after_error(client: TestClient, monkeypatch):

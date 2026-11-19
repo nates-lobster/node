@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     )
     auth_credentials_path: str = str(DEFAULT_DATA_DIR / "auth_credentials.json")
     auth_guard_token_path: str = str(DEFAULT_DATA_DIR / "auth_guard_token.txt")
+    # Scoped guard tokens (focus_guard, worker) + legacy flag. Empty = a
+    # `guard_tokens.json` next to auth_guard_token_path.
+    auth_guard_tokens_path: str = ""
     auth_session_days: int = Field(
         default=7,
         validation_alias=AliasChoices("AUTH_SESSION_DAYS", "NODE_AUTH_SESSION_DAYS"),

@@ -19,6 +19,7 @@ data/
 **/auth_credentials.json
 **/auth_guard_token.txt
 **/guard_token.secret
+**/guard_tokens.json
 **/serve-token
 **/os_settings.json
 **/os_presets.json

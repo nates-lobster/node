@@ -21,7 +21,7 @@ from .apps_manager import apps_manager
 from .agent_logbook import agent_logbook
 from .ai_providers import ai_provider_registry
 from .ai_runtime import ai_runtime_manager
-from .auth import SESSION_COOKIE_NAME, auth_service
+from .auth import GUARD_SCOPES, SESSION_COOKIE_NAME, auth_service
 from .extensions_manager import BUILTIN_WIDGET_CATALOG, extensions_manager
 from .web_search_tool import fetch_webpage_text, search_web
 from .browser_stream import browser_stream_manager, format_readable_or_ping_fallback, is_intelligible_text
@@ -153,20 +153,8 @@ PUBLIC_EXACT_PATHS = {
     "/api/v1/auth/logout",
 }
 
-GUARD_TOKEN_ALLOWED_PATHS = {
-    "/api/v1/focus-guard/heartbeat",
-    "/api/v1/focus-guard/respond",
-    "/api/v1/focus-guard/justify",
-    "/api/v1/focus-guard/status",
-    "/api/v1/ping",
-    "/api/v1/models/ping",
-    "/api/v1/ext/bootstrap",
-    "/api/v1/ext/info",
-    "/api/v1/ext/package.zip",
-    "/api/v1/ext/quick-capture",
-    "/api/v1/ext/cookies",
-    "/api/v1/ext/session/import",
-}
+# Routes reachable with `X-Node-Guard-Token` instead of a session, and which
+# token scope each accepts, live in `auth.GUARD_SCOPES`.
 
 
 # Hosts whose slug is not a clean first-label match.
@@ -225,6 +213,7 @@ def _request_authenticated_user(request: Request, db: Session) -> Optional[str]:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    auth_service.ensure_guard_tokens()
     memory_store.ensure_files()
     ai_runtime_manager.reconcile_stale_jobs_on_boot()
 
@@ -308,9 +297,10 @@ async def auth_gate_and_cache_headers(request: Request, call_next):
                 with Session(engine) as db:
                     if auth_service.verify_session_token(raw_tok, db):
                         authorized = True
-            if not authorized and path in GUARD_TOKEN_ALLOWED_PATHS:
+            guard_scope = auth_service.guard_scope_for_path(path)
+            if not authorized and guard_scope:
                 guard_hdr = request.headers.get("x-node-guard-token")
-                if auth_service.verify_guard_token(guard_hdr):
+                if auth_service.verify_guard_token(guard_hdr, guard_scope):
                     authorized = True
 
             if not authorized:
@@ -390,6 +380,31 @@ def logout_os_lock_screen(
     auth_service.revoke_session(raw_tok, session)
     auth_service.clear_session_cookie(response, request)
     return {"ok": True, "authenticated": False}
+
+
+# ---------------------------------------------------------------------------
+# Scoped guard tokens (session-only: none of these paths are in GUARD_SCOPES,
+# so a guard token can never read or rotate another scope's token).
+# Deliberately NOT exposed as an AI tool — secrets must not land in chat logs
+# or be sent to cloud model providers.
+# ---------------------------------------------------------------------------
+@app.get("/api/v1/auth/guard-tokens")
+def list_guard_tokens() -> Dict[str, Any]:
+    return auth_service.describe_guard_tokens()
+
+
+@app.post("/api/v1/auth/guard-tokens/end-legacy")
+def end_guard_token_legacy() -> Dict[str, Any]:
+    auth_service.end_guard_legacy()
+    return auth_service.describe_guard_tokens()
+
+
+@app.post("/api/v1/auth/guard-tokens/{scope}/rotate")
+def rotate_guard_token(scope: str) -> Dict[str, Any]:
+    if scope not in GUARD_SCOPES:
+        raise HTTPException(status_code=404, detail=f"Unknown token scope '{scope}'")
+    auth_service.rotate_guard_token(scope)
+    return auth_service.describe_guard_tokens()
 
 
 @app.get("/api/v1/auth/shell")
@@ -2498,7 +2513,7 @@ def update_cron_settings(
 def download_youtube_guard_userscript(request: Request, origin: Optional[str] = Query(default=None)) -> Response:
     pctx = _extract_proxy_context(request)
     hub_origin = (origin or pctx["public_origin"] or str(request.base_url)).rstrip("/")
-    guard_tok = auth_service.get_or_create_guard_token()
+    guard_tok = auth_service.get_guard_token("focus_guard")
     body = focus_guard_service.build_userscript(hub_origin, guard_token=guard_tok)
     return Response(
         content=body,
@@ -2511,7 +2526,7 @@ def download_youtube_guard_userscript(request: Request, origin: Optional[str] = 
 def download_youtube_guard_extension(request: Request, origin: Optional[str] = Query(default=None)) -> Response:
     pctx = _extract_proxy_context(request)
     hub_origin = (origin or pctx["public_origin"] or str(request.base_url)).rstrip("/")
-    guard_tok = auth_service.get_or_create_guard_token()
+    guard_tok = auth_service.get_guard_token("focus_guard")
     raw_zip = focus_guard_service.build_extension_zip(hub_origin, guard_token=guard_tok)
     return Response(
         content=raw_zip,
@@ -2846,7 +2861,7 @@ def download_universal_focus_guard_userscript(request: Request) -> Response:
     pctx = _extract_proxy_context(request)
     js = focus_guard_service.build_userscript(
         hub_origin=pctx["public_origin"],
-        guard_token=auth_service.get_or_create_guard_token(),
+        guard_token=auth_service.get_guard_token("focus_guard"),
     )
     return Response(content=js, media_type="application/javascript")
 
@@ -4034,9 +4049,10 @@ async def _quick_capture_impl(text_payload: Dict[str, Any], session: Session) ->
 # Browser-extension endpoints (guard-token authenticated, CORS-safe)
 #
 # The MV3 extension cannot rely on the httpOnly session cookie: it calls from
-# an extension origin. Instead it sends `X-Node-Guard-Token`, which the user
-# copies once from Settings → Extension. These three routes are the only
-# extension surface, and none of them can read arbitrary data.
+# an extension origin. Instead it sends `X-Node-Guard-Token` (the `extension`
+# scope), which the user copies once from Settings → Browser Extension. That
+# token unlocks only `auth.GUARD_SCOPES["extension"]["routes"]`; none of them
+# can read arbitrary data, and it cannot reach focus-guard or worker routes.
 # ---------------------------------------------------------------------------
 @app.get("/api/v1/ext/bootstrap")
 async def ext_bootstrap(session: Session = Depends(get_session)) -> Dict[str, Any]:
@@ -4127,8 +4143,8 @@ def ext_info() -> Dict[str, Any]:
         "zip_url": "/api/v1/ext/package.zip",
         "guard_token": auth_service.get_or_create_guard_token(),
         "newtab_mode": values.get("newtab_mode") or "custom",
-        "ext_routes": ["/api/v1/ext/bootstrap", "/api/v1/ext/quick-capture", "/api/v1/ext/cookies"],
-        "bridge_detail": "Cookies are grouped per host and injected into the bridge store, so learned api-anything operations and scrapers reuse your browser login.",
+        "ext_routes": sorted(GUARD_SCOPES["extension"]["routes"]),
+        "bridge_detail": "Cookies are grouped per host and injected into the bridge store, so learned api-anything operations and the server browser reuse your browser login.",
     }
 
 
@@ -4157,7 +4173,7 @@ async def ext_cookie_import(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     Body: {"cookies": [...], "reason": str, "captured_at": iso}
     Cookies are grouped per host and handed to the bridge's per-app stores so
-    learned operations and scrapers reuse the user's real logged-in session.
+    learned operations and the server browser reuse the user's real logged-in session.
     """
     from .api_bridge import api_bridge_service
 

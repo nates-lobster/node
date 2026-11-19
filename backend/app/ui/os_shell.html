@@ -3112,7 +3112,7 @@
                   <button type="button" @click="settingsTab = 'presets'" class="settings-nav-btn inline-flex items-center gap-1.5" :class="settingsTab === 'presets' ? 'is-active' : ''">
                     <span class="inline-flex" x-html="nodeSvg('code', 13)"></span><span>Presets &amp; Code</span>
                   </button>
-                  <button type="button" @click="settingsTab = 'system'" class="settings-nav-btn inline-flex items-center gap-1.5" :class="settingsTab === 'system' ? 'is-active' : ''">
+                  <button type="button" @click="settingsTab = 'system'; loadGuardTokens()" class="settings-nav-btn inline-flex items-center gap-1.5" :class="settingsTab === 'system' ? 'is-active' : ''">
                     <span class="inline-flex" x-html="nodeSvg('cpu', 13)"></span><span>System</span>
                   </button>
                   <button type="button" @click="settingsTab = 'extension'; loadExtensionInfo()" class="settings-nav-btn inline-flex items-center gap-1.5" :class="settingsTab === 'extension' ? 'is-active' : ''">
@@ -3809,6 +3809,47 @@
                   </button>
                 </div>
 
+                <div class="studio-card rounded-xl p-4 space-y-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div class="font-semibold text-ink">Device tokens</div>
+                      <div class="text-muted-ink mt-0.5">Clients that can't sign in send one of these instead. Each token only unlocks its own routes.</div>
+                    </div>
+                    <button type="button" @click="loadGuardTokens()" class="rounded-lg studio-subcard px-2.5 py-1.5 text-[11px] text-muted-ink hover:text-ink">Refresh</button>
+                  </div>
+
+                  <div x-show="guardTokens.legacy_shared" class="rounded-lg border border-amber-500/35 bg-amber-500/15 p-3 space-y-2">
+                    <div class="font-semibold text-amber-300">Finish the token migration</div>
+                    <div class="text-[11px] text-muted-ink leading-relaxed">
+                      This server used to have one shared token. For now, the browser-extension token still works for the focus guard and workers.
+                      Re-download the focus guard (Focus Guard window), switch worker scripts to the <strong>Workers</strong> token, then finish.
+                    </div>
+                    <button type="button" @click="endGuardTokenLegacy()" :disabled="guardTokenBusy" class="rounded-lg btn-accent px-3 py-1.5 text-[11px] font-semibold">Finish migration</button>
+                  </div>
+
+                  <template x-for="scope in guardTokens.scopes" :key="'gt-' + scope.id">
+                    <div class="studio-subcard rounded-lg p-3 space-y-1.5">
+                      <div class="flex items-center justify-between gap-2">
+                        <div class="font-semibold text-ink" x-text="scope.label"></div>
+                        <div class="text-[10.5px] text-subtle-ink" x-text="scope.routes.length + ' route' + (scope.routes.length === 1 ? '' : 's')" :title="scope.routes.join('\n')"></div>
+                      </div>
+                      <div class="text-[10.5px] text-subtle-ink" x-text="scope.used_by"></div>
+                      <div class="flex items-center gap-2">
+                        <code class="flex-1 min-w-0 truncate rounded-lg bg-black/30 px-2.5 py-1.5 font-mono text-[11px] text-accent" x-text="scope.token"></code>
+                        <button type="button" @click="copyGuardToken(scope)" class="rounded-lg studio-subcard px-2.5 py-1.5 text-[11px] text-muted-ink hover:text-ink">Copy</button>
+                        <button
+                          type="button"
+                          @click="rotateGuardToken(scope.id)"
+                          :disabled="guardTokenBusy"
+                          class="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold"
+                          :class="guardTokenConfirm === scope.id ? 'bg-rose-500/20 border border-rose-500/40 text-rose-200' : 'studio-subcard text-muted-ink hover:text-ink'"
+                          x-text="guardTokenConfirm === scope.id ? 'Confirm rotate' : 'Rotate'"
+                        ></button>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
                 <form @submit.prevent="fireSimulatedPing()" class="studio-subcard rounded-xl p-4 flex flex-wrap items-center gap-2">
                   <span class="font-semibold text-ink">Test Ping:</span>
                   <input type="text" x-model="simPing.source_app" placeholder="Source App" class="w-32 rounded-lg studio-input px-2.5 py-1.5" />
@@ -3873,7 +3914,7 @@
                       <code class="flex-1 min-w-0 truncate rounded-lg bg-black/30 px-2.5 py-1.5 font-mono text-[11px] text-accent" x-text="extensionInfo.guard_token || '—'"></code>
                       <button type="button" @click="copyExtensionToken()" class="rounded-lg studio-subcard px-2.5 py-1.5 text-[11px] text-muted-ink hover:text-ink">Copy</button>
                     </div>
-                    <div class="text-[10.5px] text-subtle-ink">Paste it into the extension's Settings → Guard token. It only unlocks the three extension routes, nothing else.</div>
+                    <div class="text-[10.5px] text-subtle-ink">Paste it into the extension's Settings → Guard token. It only unlocks the extension's own routes (new tab, quick capture, cookie sync). Rotate it under Settings → System → Device tokens.</div>
                   </div>
 
                   <div class="space-y-1.5 pt-1 border-t border-white/5">
