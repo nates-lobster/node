@@ -5,6 +5,31 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.15.1 — 2026-11-20
+
+### Added
+- **Standalone API Recorder** in `tools/api-recorder/`. You no longer need the
+  extension to record a site's API calls.
+  - **Console snippet** (`console-recorder.js`): paste it into DevTools on the
+    site. It has the same panel as the extension (Watch my next action, tick,
+    label, Save/Copy), and adds websocket rows (Teams) and `nodeRec.*` console
+    helpers. It's built without `innerHTML` or inline styles, so it works on
+    pages that enforce Trusted Types / strict CSP. It only sees calls made
+    after pasting.
+  - **`record.py`**: opens a browser window with its own saved profile and a
+    marking page at `http://127.0.0.1:8765`. It catches everything, including
+    page-load calls, worker requests, cookie names and websockets. Ctrl+C
+    saves your marked calls to a file. It can also use installed Edge/Chrome
+    (`--channel`), Brave (`--browser`), or attach over `--cdp`.
+  - Both use `extension/recorder/shape.js` for redaction and produce the
+    extension's file format.
+
+### Developer
+- CI checks that `console-recorder.js` is rebuilt (`build.mjs --check`) and
+  runs `pytest tools/api-recorder`. The browser tests skip without Chromium.
+
+---
+
 ## 0.15.0 — 2026-11-20
 
 A tool for building connectors from the sites you're already logged into.

@@ -1,4 +1,4 @@
-# Node (v0.15.0)
+# Node (v0.15.1)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -25,6 +25,16 @@ docker compose up -d --build         # http://<server>:8080
 writes lives in `data/` (SQLite DB, uploads, browser sessions, credentials). It is
 gitignored and host-mounted, so `git pull` updates the code and never touches your
 data.
+
+---
+
+## What's New in v0.15.1
+
+**API Recorder without the extension.** [`tools/api-recorder/`](tools/api-recorder/)
+has two standalone versions with the same mark-and-save flow:
+- a **console snippet**: paste it into DevTools on the site, nothing to install;
+- **`record.py`**: opens its own browser window with a local marking page at
+  `127.0.0.1:8765`, and catches page-load calls and cookie names too.
 
 ---
 
