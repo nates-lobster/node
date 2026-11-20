@@ -24,6 +24,13 @@ jobs:
         run: pip install -r backend/requirements.txt pytest pytest-timeout
       - name: Syntax-check the dashboard JS
         run: node --check backend/app/ui/os_app.js && node --check backend/app/ui/os_customizer.js
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Extension checks + recorder tests
+        run: |
+          for f in extension/*.js extension/recorder/*.js; do node --check "$f"; done
+          node --test extension/recorder/shape.test.mjs extension/recorder/recorder-bg.test.mjs
       - name: Test
         # Real-browser tests skip without Chromium; the rest needs no network.
         env:
