@@ -31,8 +31,11 @@ jobs:
         run: |
           for f in extension/*.js extension/recorder/*.js; do node --check "$f"; done
           node --test extension/recorder/shape.test.mjs extension/recorder/recorder-bg.test.mjs
+          node tools/api-recorder/build.mjs --check
       - name: Test
         # Real-browser tests skip without Chromium; the rest needs no network.
         env:
           PYTHONPATH: backend
         run: python -m pytest backend/tests -q -p no:cacheprovider --timeout=120 -rs
+      - name: Test the standalone API recorder
+        run: python -m pytest tools/api-recorder -q -p no:cacheprovider --timeout=120 -rs
