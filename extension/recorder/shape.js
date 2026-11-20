@@ -116,8 +116,8 @@
       const keys = Object.keys(value);
       for (const k of keys.slice(0, 60)) {
         // Keys that themselves look like ids/emails are collapsed.
-        const safeKey = /@/.test(k) || /^[A-Za-z0-9+/=_-]{24,}$/.test(k) ? "<key>" : k;
-        out[safeKey] = shape(value[k], depth + 1, k === "__type" ? "" : k);
+        const safeKey = isIdLikeKey(k) ? "<key>" : k;
+        out[safeKey] = OAUTH_PROTOCOL_KEYS.has(k) ? protocolValue(k, value[k]) : shape(value[k], depth + 1, k === "__type" ? "" : k);
       }
       if (keys.length > 60) out["<more keys>"] = keys.length - 60;
       return out;
@@ -143,6 +143,39 @@
   }
 
   /** Text body -> shape (JSON) or key list (form / urlencoded); null if empty/opaque. */
+  /** Keys that are ids themselves ("AAQkAGI2…": {...}), not names like "refresh_token_expires_in". */
+  function isIdLikeKey(k) {
+    if (/@/.test(k)) return true;
+    if (/^[0-9a-f-]{16,}$/i.test(k)) return true;
+    // Long base64-ish run with a digit, or a 32+ char run without word separators.
+    return /^[A-Za-z0-9+/=_-]{24,}$/.test(k) && (/\d/.test(k) || (k.length >= 32 && !/[_-]/.test(k)));
+  }
+
+  // OAuth/OpenID fields whose values are protocol, not secrets: which app logs
+  // in, which flow, and which service the token is for. A connector can't be
+  // written without them. Token values themselves are never kept.
+  const OAUTH_PROTOCOL_KEYS = new Set(["client_id", "grant_type", "response_type", "token_type", "scope", "scp", "resource", "aud", "audience"]);
+
+  function protocolValue(key, v) {
+    if (typeof v === "number" || typeof v === "boolean") return v;
+    if (typeof v !== "string") return shape(v, 1, "");
+    if (key === "client_id") return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) ? v.toLowerCase() : `<text ${v.length}>`;
+    if (key === "grant_type" || key === "response_type" || key === "token_type") return /^[A-Za-z0-9_: .-]{1,60}$/.test(v) && !/@/.test(v) ? v : `<text ${v.length}>`;
+    // scope / resource / audience: keep service URLs and permission names only.
+    return v
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 20)
+      .map((part) =>
+        /^https:\/\/[a-z0-9.-]+(\/[A-Za-z0-9._\/-]*)?$/i.test(part) && !/@/.test(part)
+          ? part
+          : /^(openid|profile|offline_access|email|[A-Z][A-Za-z]+(\.[A-Z][A-Za-z]+)+|[0-9a-f-]{36}\/\.default)$/.test(part)
+          ? part
+          : "<scope>",
+      )
+      .join(" ");
+  }
+
   function shapeBodyText(text) {
     if (text === null || text === undefined) return null;
     const s = String(text).trim();
@@ -158,7 +191,7 @@
       const keys = {};
       for (const pair of s.split("&")) {
         const k = decodeURIComponentSafe(pair.split("=")[0]);
-        keys[k] = "<value>";
+        keys[k] = OAUTH_PROTOCOL_KEYS.has(k) ? protocolValue(k, decodeURIComponentSafe(pair.slice(pair.indexOf("=") + 1))) : "<value>";
       }
       return { "<form>": keys };
     }

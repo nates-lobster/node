@@ -99,9 +99,9 @@ test("noise is hidden and likely-useful calls are suggested", () => {
   assert.ok(!S.isSuggested("https://example.com/whatever", { ok: true }));
 });
 
-test("form bodies keep keys only; opaque bodies are summarized", () => {
-  assert.deepEqual(S.shapeBodyText("grant_type=refresh_token&refresh_token=SECRET&client_id=abc"), {
-    "<form>": { grant_type: "<value>", refresh_token: "<value>", client_id: "<value>" },
+test("form bodies keep keys (plus OAuth protocol values); opaque bodies are summarized", () => {
+  assert.deepEqual(S.shapeBodyText("grant_type=refresh_token&refresh_token=SECRET&client_id=abc&name=Maria"), {
+    "<form>": { grant_type: "refresh_token", refresh_token: "<value>", client_id: "<text 3>", name: "<value>" },
   });
   assert.equal(S.shapeBodyText("\u0000binary"), "<non-JSON body 7 chars>");
   assert.equal(S.shapeBodyText(""), null);
@@ -129,3 +129,34 @@ test("search strings, usernames and names under content keys are masked even if 
   assert.equal(S.isIdentifierLike("John.Smith"), false);
   assert.equal(S.isIdentifierLike("IPM.Schedule.Meeting.Request"), true);
 });
+
+test("OAuth protocol values are kept, tokens and personal values are not", () => {
+  const form = S.shapeBodyText(
+    "client_id=5e3ce6c0-2b1f-4285-8d4b-75ee78787346&redirect_uri=https%3A%2F%2Fteams.cloud.microsoft%2Fv2&" +
+      "scope=https%3A%2F%2Fic3.teams.office.com%2F.default%20openid%20profile%20offline_access&grant_type=refresh_token&" +
+      "refresh_token=0.ARoAsecret&X-AnchorMailbox=Oid%3Aabc%40tenant&client_info=1",
+  )["<form>"];
+  assert.equal(form.client_id, "5e3ce6c0-2b1f-4285-8d4b-75ee78787346");
+  assert.equal(form.grant_type, "refresh_token");
+  assert.equal(form.scope, "https://ic3.teams.office.com/.default openid profile offline_access");
+  assert.equal(form.refresh_token, "<value>");
+  assert.equal(form.redirect_uri, "<value>");
+  assert.equal(form["X-AnchorMailbox"], "<value>");
+  const resp = S.shape({
+    token_type: "Bearer",
+    scope: "https://outlook.office.com/Mail.Read https://outlook.office.com/.default Mail.ReadWrite https://x.example/?u=me@x.org",
+    expires_in: 4235,
+    refresh_token_expires_in: 86399,
+    access_token: "eyJ0eXAiOiJKV1QiLCJhbGciOi",
+    refresh_token: "0.ARoA",
+    AAQkAGI2NGVhZTVlLTI3ZjUtNDQ1Ni1hYjE0: { x: 1 },
+  });
+  assert.equal(resp.token_type, "Bearer");
+  assert.equal(resp.scope, "https://outlook.office.com/Mail.Read https://outlook.office.com/.default Mail.ReadWrite <scope>");
+  assert.equal(resp.expires_in, "<int>");
+  assert.equal(resp.refresh_token_expires_in, "<int>", "snake_case names are not id-like keys");
+  assert.equal(resp.access_token, "<text 26>");
+  assert.equal(resp.refresh_token, "<text 6>");
+  assert.ok("<key>" in resp, "base64 id keys are still masked");
+});
+

@@ -31,8 +31,18 @@ SECRETS = ["SECRET-TOKEN", "eyJhbGci", "SECRETCANARY999", "Lab report", "Maria",
 PAGE = """<!doctype html><html><body><h1>Fake OWA</h1>
 <button id="folder" onclick="loadList()">inbox</button>
 <button id="open" onclick="openItem()">open email</button>
+<button id="worker" onclick="startWorker()">load in worker</button>
+<button id="shared" onclick="sharedPort().postMessage('go')">load in shared worker</button>
 <script>
 const TOKEN = "Bearer SECRET-TOKEN-eyJhbGciOi123";
+const tt = trustedTypes.createPolicy("owa", {createScriptURL: (u) => u});
+function startWorker() { new Worker(tt.createScriptURL("/owa/data-worker.js")); }
+let shared = null;
+function sharedPort() {
+  shared = shared || new SharedWorker(tt.createScriptURL("/owa/shared-worker.js"));
+  shared.port.start();
+  return shared.port;
+}
 async function loadList() {
   await fetch("/owa/service.svc?action=FindConversation&app=Mail&n=12", {method: "POST",
     headers: {"Authorization": TOKEN, "action": "FindConversation", "Content-Type": "application/json; charset=utf-8"},
@@ -55,6 +65,12 @@ LIST = {"Body": {"ResponseMessages": {"Items": [{"Conversation": [
     {"ConversationTopic": "Band concert", "UniqueSenders": ["Ms. Diaz"],
      "From": {"Mailbox": {"EmailAddress": "diaz@thedps.org"}}, "UnreadCount": 0,
      "ConversationId": {"Id": "AAQkAGI2NGVhZTVlLTI3ZjUtNDQ1Ni1hYjE1"}}]}]}}}
+WORKER_JS = """fetch("/owa/service.svc?action=GetConversationItems&app=Mail&n=90", {method: "POST",
+  headers: {"Authorization": "Bearer SECRET-TOKEN-worker", "action": "GetConversationItems"}, body: "{}"});"""
+SHARED_JS = """onconnect = (e) => { const port = e.ports[0]; port.onmessage = () =>
+  fetch("/owa/service.svc?action=FindItem&app=Mail&n=91", {method: "POST",
+    headers: {"Authorization": "Bearer SECRET-TOKEN-shared", "action": "FindItem", "Content-Type": "application/json"},
+    body: JSON.stringify({__type: "FindItemJsonRequest:#Exchange", Body: {QueryString: "from:maria"}})}); };"""
 ITEM = {"Body": {"ResponseMessages": {"Items": [{"Items": [
     {"Subject": "Lab report due Friday", "Body": {"Value": "<p>Bring goggles, Maria</p>", "BodyType": "HTML"}}]}]}}}
 
@@ -75,11 +91,16 @@ class FakeOwa(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def do_GET(self):
+        if self.path.endswith("shared-worker.js"):
+            return self._send(200, SHARED_JS, "text/javascript")
+        if self.path.endswith("data-worker.js"):
+            # New Outlook/Teams load mail and chats from a background worker like this.
+            return self._send(200, WORKER_JS, "text/javascript")
         self._send(200, PAGE, "text/html")
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("Content-Length") or 0))
-        if "FindConversation" in self.path:
+        if "FindConversation" in self.path or "FindItem" in self.path:
             return self._send(200, json.dumps(LIST), "application/json; charset=utf-8")
         if "GetItem" in self.path:
             return self._send(200, json.dumps(ITEM), "application/json")
@@ -219,6 +240,10 @@ def test_console_snippet_records_marks_and_saves_under_strict_csp(owa):
             async with page.expect_download() as dl:
                 await page.evaluate("nodeRec.save()")
             assert (await dl.value).suggested_filename.startswith("node-api-capture-127.0.0.1-")
+            # A background worker's calls are invisible to a pasted hook...
+            await page.click("#worker")
+            await page.wait_for_timeout(1200)
+            assert not any("GetConversationItems" in g["key"] for g in await page.evaluate("nodeRec.groups()"))
             # stop() restores the page's own fetch
             await page.evaluate("nodeRec.stop()")
             assert await page.evaluate("window.fetch.toString().includes('[native code]')")
@@ -242,9 +267,22 @@ def test_python_recorder_end_to_end(owa, tmp_path):
             page = await app.context.new_page()
             await page.goto(owa + "/owa/")
             await page.click("#open")
+            await page.click("#worker")
+            # Shared workers: Playwright can't see them; the CDP tap attaches
+            # within ~2 s, after which their calls are caught.
+            await page.evaluate("sharedPort()")
+            await page.wait_for_timeout(2600)
+            await page.click("#shared")
             await page.wait_for_timeout(2500)
             gs = {g["key"].split(" · ")[-1]: g for g in app.rec.groups()}
-            assert {"FindConversation", "GetItem"} <= set(gs), list(gs)
+            # ...but record.py sees the network, so it catches them.
+            assert {"FindConversation", "GetItem", "GetConversationItems", "FindItem"} <= set(gs), list(gs)
+            shared = gs["FindItem"]
+            assert shared["via"] == "shared-worker"
+            assert shared["messageList"] and shared["requestBody"]["__type"] == "FindItemJsonRequest:#Exchange"
+            assert "authorization" in shared["requestHeaderNames"] and shared["requestHeaders"]["action"] == "FindItem"
+            assert shared["responseBody"] is not None, "response body read over CDP"
+            assert shared["cookieNames"] == ["X-OWA-CANARY"], "real outgoing headers via ExtraInfo"
             find = gs["FindConversation"]
             # startup call caught, with real header and cookie NAMES
             assert find["suggested"] and find["messageList"]

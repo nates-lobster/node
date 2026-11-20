@@ -1,4 +1,4 @@
-# Node (v0.15.1)
+# Node (v0.15.2)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -25,6 +25,17 @@ docker compose up -d --build         # http://<server>:8080
 writes lives in `data/` (SQLite DB, uploads, browser sessions, credentials). It is
 gitignored and host-mounted, so `git pull` updates the code and never touches your
 data.
+
+---
+
+## What's New in v0.15.2
+
+**Recorder fixes from the first real captures.** Outlook and Teams load mail and
+chats inside background workers, which a console snippet can't see.
+`record.py` now catches **shared-worker** traffic too (dedicated and service
+workers already worked), and the snippet warns you on those sites. Captures
+now keep the OAuth `client_id`, `grant_type` and `scope` (never tokens). Notes:
+[`docs/connectors/microsoft-capture-notes.md`](docs/connectors/microsoft-capture-notes.md).
 
 ---
 

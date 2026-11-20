@@ -5,6 +5,33 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.15.2 — 2026-11-20
+
+Fixes found by the first real Outlook/Teams captures.
+
+### Fixed
+- **`record.py` now records SharedWorker requests.** Playwright doesn't report
+  them, so a DevTools-protocol tap attaches to each shared worker and reads its
+  requests, responses and bodies. Cookie names come from the browser's jar.
+  Calls a worker made before it was attached (within ~2 s) are missed; re-do
+  the action. Page, dedicated-worker and service-worker requests were already
+  covered, and tests now prove all four.
+- **The console snippet warns on Outlook/Teams** that their mail and chat calls
+  run in background workers it can't see, and points to `record.py`.
+- **Redaction no longer hides what a connector needs:**
+  - OAuth `client_id` (an app's public id), `grant_type`, `token_type` and
+    `scope`/`resource` service URLs are kept. Tokens and redirect URIs are
+    still masked.
+  - Long snake_case keys like `refresh_token_expires_in` are no longer mistaken
+    for ids. Base64 id keys are still masked.
+
+### Docs
+- `docs/connectors/microsoft-capture-notes.md`: what the captures show.
+  Outlook uses bearer tokens, not cookies; Teams uses the 24 h MSAL SPA
+  refresh flow. Also the token options for the connector.
+
+---
+
 ## 0.15.1 — 2026-11-20
 
 ### Added

@@ -414,6 +414,182 @@ class UiServer:
                 pass
 
 
+# ------------------------------------------------------ shared workers
+class SharedWorkerTap:
+    """Records requests made inside SharedWorkers, which Playwright doesn't report.
+
+    Uses the DevTools protocol: every 2 s it lists the browser's targets,
+    attaches to new shared workers (non-flattened, so it works through a
+    normal Playwright CDP session) and enables their Network domain. Calls a
+    worker made before it was attached are missed, so re-do the action.
+    """
+
+    KEEP = {"Fetch", "XHR", "EventSource", "Other"}
+
+    def __init__(self, app: "App"):
+        self.app = app
+        self.session = None
+        self.session_page = None
+        self.attached: Dict[str, str] = {}  # targetId -> sessionId
+        self.requests: Dict[tuple, Dict[str, Any]] = {}
+        self.pending: Dict[tuple, asyncio.Future] = {}
+        self.extra: Dict[tuple, Dict[str, str]] = {}
+        self.cookie_cache: Dict[str, tuple] = {}  # ExtraInfo can arrive before requestWillBeSent
+        self.next_id = 1000
+        self.task: Optional[asyncio.Task] = None
+        self.workers_seen = 0
+
+    def start(self) -> None:
+        self.task = asyncio.ensure_future(self._loop())
+
+    async def stop(self) -> None:
+        if self.task:
+            self.task.cancel()
+
+    async def _loop(self) -> None:
+        while True:
+            try:
+                await self._scan()
+            except Exception as exc:
+                if os.getenv("NODE_REC_DEBUG"):
+                    print("shared-worker tap:", exc, file=sys.stderr)
+                self.session = None
+            await asyncio.sleep(2)
+
+    async def _ensure_session(self):
+        page = await self.app.rec.shaper._ensure()
+        if self.session is None or self.session_page is not page or page.is_closed():
+            self.session = await self.app.context.new_cdp_session(page)
+            self.session_page = page
+            self.attached.clear()
+            self.session.on("Target.receivedMessageFromTarget", self._on_message)
+        return self.session
+
+    async def _scan(self) -> None:
+        session = await self._ensure_session()
+        infos = (await session.send("Target.getTargets"))["targetInfos"]
+        live = set()
+        for t in infos:
+            if t.get("type") != "shared_worker":
+                continue
+            live.add(t["targetId"])
+            if t["targetId"] in self.attached:
+                continue  # requests are filtered by --match one by one, like page requests
+            res = await session.send("Target.attachToTarget", {"targetId": t["targetId"], "flatten": False})
+            sid = res["sessionId"]
+            self.attached[t["targetId"]] = sid
+            self.workers_seen += 1
+            await self._send(sid, "Network.enable", {}, wait=False)
+        for tid in list(self.attached):
+            if tid not in live:
+                self.attached.pop(tid, None)
+
+    async def _send(self, sid: str, method: str, params: Dict[str, Any], wait: bool = True):
+        self.next_id += 1
+        mid = self.next_id
+        fut = None
+        if wait:
+            fut = asyncio.get_running_loop().create_future()
+            self.pending[(sid, mid)] = fut
+        await self.session.send("Target.sendMessageToTarget",
+                                {"sessionId": sid, "message": json.dumps({"id": mid, "method": method, "params": params})})
+        if fut is None:
+            return None
+        try:
+            return await asyncio.wait_for(fut, timeout=10)
+        finally:
+            self.pending.pop((sid, mid), None)
+
+    def _on_message(self, event: Dict[str, Any]) -> None:
+        sid = event.get("sessionId")
+        try:
+            msg = json.loads(event.get("message") or "{}")
+        except ValueError:
+            return
+        if "id" in msg:
+            fut = self.pending.get((sid, msg["id"]))
+            if fut and not fut.done():
+                fut.set_result(msg.get("result") or {"error": msg.get("error")})
+            return
+        method, params = msg.get("method"), msg.get("params") or {}
+        rid = (sid, params.get("requestId"))
+        if method == "Network.requestWillBeSent":
+            req = params.get("request") or {}
+            if params.get("type", "Other") not in self.KEEP or self.app.rec.paused:
+                return
+            if not self.app.rec.wants(req.get("url", ""), ""):
+                return
+            self.requests[rid] = {"method": req.get("method", "GET"), "url": req.get("url", ""),
+                                  "headers": req.get("headers") or {}, "postData": req.get("postData"),
+                                  "hasPostData": req.get("hasPostData"), "t": time.time() * 1000, "type": params.get("type", "Other")}
+        elif method == "Network.requestWillBeSentExtraInfo":
+            # The headers that really went out, cookies included. Applied when the request finishes.
+            self.extra[rid] = params.get("headers") or {}
+            if len(self.extra) > 2000:
+                self.extra.pop(next(iter(self.extra)))
+        elif method == "Network.responseReceived" and rid in self.requests:
+            resp = params.get("response") or {}
+            self.requests[rid]["status"] = resp.get("status")
+            self.requests[rid]["ctype"] = (resp.get("mimeType") or "")
+        elif method in ("Network.loadingFinished", "Network.loadingFailed") and rid in self.requests:
+            info = self.requests.pop(rid)
+            if rid in self.extra:
+                info["headers"] = self.extra.pop(rid) or info["headers"]
+            asyncio.ensure_future(self._finish(sid, rid[1], info, failed=method == "Network.loadingFailed"))
+
+    async def _cookie_names(self, url: str) -> List[str]:
+        host = urlparse(url).netloc
+        hit = self.cookie_cache.get(host)
+        if hit and time.time() - hit[0] < 30:
+            return hit[1]
+        try:
+            res = await self.session.send("Network.getCookies", {"urls": [url]})
+            names = sorted({c["name"] for c in res.get("cookies", [])})
+        except Exception:
+            names = []
+        self.cookie_cache[host] = (time.time(), names)
+        return names
+
+    async def _finish(self, sid: str, request_id: str, info: Dict[str, Any], failed: bool) -> None:
+        try:
+            body_text = None
+            marker = None
+            if not failed and textish(info.get("ctype", "")) and info.get("status") not in (204, None) and not (300 <= (info.get("status") or 0) < 400):
+                res = await self._send(sid, "Network.getResponseBody", {"requestId": request_id})
+                if res and "body" in res:
+                    if res.get("base64Encoded"):
+                        import base64
+                        res["body"] = base64.b64decode(res["body"]).decode("utf-8", "replace")
+                    body = res["body"]
+                    if len(body) <= MAX_BODY:
+                        body_text = body
+                    else:
+                        marker = f"<large {len(body)} chars>"
+            post = info.get("postData")
+            if post is None and info.get("hasPostData"):
+                res = await self._send(sid, "Network.getRequestPostData", {"requestId": request_id})
+                post = (res or {}).get("postData")
+            op = ""
+            if isinstance(post, str) and len(post) < 200000:
+                m = OP_RE.search(post)
+                op = m.group(1) if m else ""
+            hdrs = dict(info.get("headers") or {})
+            if not any(k.lower() == "cookie" for k in hdrs):
+                # Worker requests don't report their final headers here; ask
+                # the browser which cookies it holds for the URL instead.
+                names = await self._cookie_names(info["url"])
+                if names:
+                    hdrs["cookie"] = "; ".join(f"{n}=x" for n in names)  # names only; values never read
+            headers = [{"name": k, "value": v} for k, v in hdrs.items()]
+            await self.app.rec._store(
+                {"method": info["method"], "url": info["url"], "headers": headers, "reqText": post,
+                 "respText": body_text, "respMarker": marker, "op": op},
+                t=info["t"], status="failed" if failed else info.get("status"), via="shared-worker", page_url="",
+            )
+        except Exception:
+            self.app.rec.dropped += 1
+
+
 # --------------------------------------------------------------- the app
 class App:
     def __init__(self, args):
@@ -457,6 +633,8 @@ class App:
         for p in self.context.pages:
             self.rec.attach_websockets(p)
         await self.rec.shaper._ensure()  # the marking UI tab
+        self.tap = SharedWorkerTap(self)
+        self.tap.start()
         if a.url and not a.cdp:
             blank = [p for p in self.context.pages if p.url in ("about:blank", "chrome://newtab/")]
             page = blank[0] if blank else await self.context.new_page()
@@ -474,6 +652,8 @@ class App:
         return out
 
     async def close(self) -> None:
+        if getattr(self, "tap", None):
+            await self.tap.stop()
         # In --cdp mode the browser is the user's own: disconnect, don't close it.
         steps = []
         if self.context is not None and not self.args.cdp:

@@ -26,6 +26,11 @@ There are three versions. All use the same redaction code
 | **Python script** (`record.py`) | `pip install playwright` | yes | yes |
 | Extension (popup → Record this tab) | the Node extension | yes (reload once) | yes |
 
+**Outlook and Teams load mail and chats in background workers.** The console
+snippet can't see those, so it misses exactly the calls you want there. Use
+`record.py` for those sites. It covers page, dedicated-worker, shared-worker
+and service-worker requests.
+
 ## Console snippet: quickest
 
 1. Open the site (e.g. Outlook) and press **F12** → **Console**.
