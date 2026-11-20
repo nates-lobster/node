@@ -3528,3 +3528,424 @@ def test_v0141_extension_zip_ships_the_api_recorder(client: TestClient):
     manifest = _json.loads(zf.read("node-webos-extension/manifest.json"))
     assert {"scripting", "webRequest"} <= set(manifest["permissions"])
     assert "debugger" not in manifest["permissions"]
+
+
+# ---------------------------------------------------------------------------
+# v0.16 API connectors (Outlook / Teams over plain HTTP, minted tokens)
+# ---------------------------------------------------------------------------
+def _fake_jwt(**claims) -> str:
+    import base64 as _b64
+    import json as _json
+
+    def enc(obj):
+        return _b64.urlsafe_b64encode(_json.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{enc({'alg': 'none'})}.{enc(claims)}.sig"
+
+
+def _runner_with(tmp_path, connector, target, url, extra_headers=None, claims=None):
+    import time as _time
+
+    from app.connectors.runner import ConnectorRunner
+    from app.connectors.state import ConnectorStateStore
+    from app.connectors.token_mint import TokenMint
+
+    mint = TokenMint()
+    token = _fake_jwt(exp=int(_time.time()) + 3600, aud="https://test.example", **(claims or {}))
+    mint.put_external(
+        target,
+        url,
+        {"Authorization": f"Bearer {token}", "Content-Length": "9", "x-owa-correlationid": "old", **(extra_headers or {})},
+    )
+    runner = ConnectorRunner(store=ConnectorStateStore(str(tmp_path / "connectors.json")), mint=mint)
+    connector.key = f"test.{connector.key}"
+    runner.override = [connector]
+    return runner
+
+
+def _owa_conversation(cid, topic, sender, when, unread, preview):
+    return {
+        "ConversationId": {"__type": "ItemId:#Exchange", "Id": cid},
+        "ConversationTopic": topic,
+        "UniqueSenders": [sender],
+        "LastDeliveryTime": when,
+        "HasAttachments": False,
+        "MessageCount": 2,
+        "UnreadCount": unread,
+        "ItemIds": [{"__type": "ItemId:#Exchange", "ChangeKey": "CQ", "Id": cid + "-item"}],
+        "Preview": preview,
+        "LastSender": {"Mailbox": {"Name": sender, "EmailAddress": "x@example.edu", "RoutingType": "SMTP"}},
+        "Importance": "Normal",
+    }
+
+
+def test_v016_token_headers_are_replayable_and_expire_from_jwt():
+    import time as _time
+
+    from app.connectors.token_mint import build_auth, replayable_headers
+
+    exp = int(_time.time()) + 1200
+    hdrs = {
+        ":authority": "outlook.cloud.microsoft",
+        "Authorization": "Bearer " + _fake_jwt(exp=exp, aud="https://outlook.office.com", oid="abc"),
+        "action": "GetFolder",
+        "x-owa-urlpostdata": "%7B%7D",
+        "Content-Length": "0",
+        "x-anchormailbox": "PUID:1@t",
+        "traceparent": "00-x",
+    }
+    clean = replayable_headers(hdrs)
+    assert set(clean) == {"authorization", "x-anchormailbox"}
+    auth = build_auth("outlook", "https://outlook.cloud.microsoft/owa/service.svc?action=GetFolder", hdrs, source="t", cookie_header="a=1")
+    assert auth.expires_at == exp and auth.claims["oid"] == "abc"
+    assert auth.headers["cookie"] == "a=1" and auth.origin == "https://outlook.cloud.microsoft"
+    described = auth.describe()
+    assert "authorization" in described["header_names"]
+    assert all("Bearer" not in str(v) for v in described.values()), "describe() must not leak the token"
+
+
+def test_v016_outlook_connector_end_to_end(client: TestClient, tmp_path):
+    import asyncio as _asyncio
+    import json as _json
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from urllib.parse import unquote
+
+    import httpx
+    from sqlmodel import Session, select
+
+    from app.connectors.outlook import OutlookMailConnector
+    from app.database import engine
+    from app.models import Notification
+
+    app_name = "Outlook " + _uniq()
+    now = _dt.now(_tz.utc)
+    fresh = (now - _td(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.0000000Z")
+    old = (now - _td(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    convs = {
+        "list": [
+            _owa_conversation("CONV-A", f"Field trip form {app_name}", "Ms. Rivera", fresh, 1, "Please return the form by Friday"),
+            _owa_conversation("CONV-B", f"Old newsletter {app_name}", "District", old, 0, "Monthly news"),
+        ]
+    }
+    seen_requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_requests.append(request)
+        action = request.headers["action"]
+        assert request.headers["authorization"].startswith("Bearer ")
+        assert request.headers["x-owa-correlationid"] != "old"
+        if action == "FindConversation":
+            payload = _json.loads(unquote(request.headers["x-owa-urlpostdata"]))
+            folder = payload["Body"]["ParentFolderId"]["BaseFolderId"]
+            assert folder == {"__type": "DistinguishedFolderId:#Exchange", "Id": "inbox"}
+            return httpx.Response(200, json={"Body": {"Conversations": convs["list"], "ResponseClass": "Success"}})
+        if action == "GetConversationItems":
+            payload = _json.loads(request.content)
+            cid = payload["Body"]["Conversations"][0]["ConversationId"]["Id"]
+            return httpx.Response(
+                200,
+                json={
+                    "Body": {
+                        "ResponseMessages": {
+                            "Items": [
+                                {
+                                    "ResponseClass": "Success",
+                                    "Conversation": {
+                                        "ConversationNodes": [
+                                            {
+                                                "Items": [
+                                                    {
+                                                        "DateTimeReceived": fresh,
+                                                        "From": {"Mailbox": {"Name": "Ms. Rivera"}},
+                                                        "UniqueBody": {
+                                                            "BodyType": "HTML",
+                                                            "Value": f"<style>p{{}}</style><p>Hi all,</p><p>Body of {cid} &amp; more</p>",
+                                                        },
+                                                        "HasAttachments": True,
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
+        return httpx.Response(404)
+
+    conn = OutlookMailConnector(app_name=app_name, app_url="https://outlook.cloud.microsoft/mail/")
+    conn.transport = httpx.MockTransport(handler)
+    runner = _runner_with(tmp_path, conn, "outlook", "https://outlook.cloud.microsoft/owa/service.svc?action=GetFolder&app=Mail")
+
+    res = _asyncio.run(runner.run_one(conn.key))
+    assert res["ok"], res
+    assert res["created"] == 1, "old read mail is skipped on the first sync"
+    with Session(engine) as s:
+        rows = s.exec(select(Notification).where(Notification.source_app == app_name)).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.sender == "Ms. Rivera" and not row.read_state and row.has_attachment
+        assert row.body_text == "Hi all,\nBody of CONV-A & more"
+        assert _json.loads(row.raw_payload)["thread"] == "CONV-A"
+
+    # Nothing new: no new rows, no body fetches.
+    n_before = len(seen_requests)
+    res = _asyncio.run(runner.run_one(conn.key, force=True))
+    assert res["ok"] and res["created"] == 0 and res["refreshed"] == 0
+    assert [r.headers["action"] for r in seen_requests[n_before:]] == ["FindConversation"]
+
+    # A reply arrives: the same row is refreshed, not duplicated.
+    newer = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    convs["list"][0] = _owa_conversation("CONV-A", f"Field trip form {app_name}", "Mr. Lee", newer, 1, "Reminder: forms due")
+    res = _asyncio.run(runner.run_one(conn.key, force=True))
+    assert res["ok"] and res["created"] == 0 and res["refreshed"] == 1, res
+    with Session(engine) as s:
+        rows = s.exec(select(Notification).where(Notification.source_app == app_name)).all()
+        assert len(rows) == 1 and rows[0].message == "Reminder: forms due"
+
+    # Read in Outlook -> read in Node.
+    convs["list"][0]["UnreadCount"] = 0
+    res = _asyncio.run(runner.run_one(conn.key, force=True))
+    assert res["marked_read"] == 1
+    with Session(engine) as s:
+        assert s.exec(select(Notification).where(Notification.source_app == app_name)).one().read_state
+
+
+def test_v016_connector_failures_back_off_and_remint_once(client: TestClient, tmp_path):
+    import asyncio as _asyncio
+
+    import httpx
+
+    from app.connectors.base import ConnectorError
+    from app.connectors.outlook import OutlookMailConnector
+
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(401)
+
+    conn = OutlookMailConnector(app_name="Outlook " + _uniq(), app_url="https://outlook.cloud.microsoft/mail/")
+    conn.transport = httpx.MockTransport(handler)
+    runner = _runner_with(tmp_path, conn, "outlook", "https://outlook.cloud.microsoft/owa/service.svc?action=X")
+    mints = []
+
+    async def fake_mint(target, *, app_url, profile):
+        mints.append(target)
+        raise ConnectorError("auth", "sign-in needed")
+
+    runner.mint._mint = fake_mint
+    res = _asyncio.run(runner.run_one(conn.key))
+    assert not res["ok"] and res["error_kind"] == "auth"
+    assert mints == ["outlook"], "a rejected cached token triggers exactly one fresh mint"
+    st = runner.store.get(conn.key)
+    assert st["failures"] == 1 and st["backoff_until"] > 0
+    status = runner.status()["connectors"][0]
+    assert status["health"] == "sign_in_needed"
+    # Backed off: a scheduled run is skipped, a forced one goes through.
+    assert _asyncio.run(runner.run_one(conn.key)).get("skipped")
+    assert _asyncio.run(runner.run_due()) == []
+
+
+def test_v016_teams_activity_feed_and_assignments(client: TestClient, tmp_path):
+    import asyncio as _asyncio
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    import httpx
+    from sqlmodel import Session, select
+
+    from app.connectors.teams import TeamsActivityConnector, TeamsAssignmentsConnector
+    from app.database import engine
+    from app.models import Notification, Task
+
+    app_name = "Teams " + _uniq()
+    now = _dt.now(_tz.utc)
+
+    def feed_handler(request):
+        assert request.url.path == "/api/chatsvc/amer/v1/users/ME/conversations/48:notifications/messages"
+        assert request.url.params["view"] == "msnp24Equivalent|supportsMessageProperties"
+        msgs = []
+        for i, (atype, read) in enumerate((("mention", "false"), ("reaction", "false"), ("reply", "true"))):
+            msgs.append(
+                {
+                    "id": f"17000000000{i}",
+                    "conversationid": "48:notifications",
+                    "originalarrivaltime": now.isoformat(),
+                    "properties": {
+                        "isread": read,
+                        "activity": {
+                            "activityType": atype,
+                            "sourceUserImDisplayName": "Sam Patel",
+                            "messagePreview": f"<p>Lab partners {app_name} {atype}</p>",
+                            "sourceThreadTopic": "Biology P3",
+                        },
+                    },
+                }
+            )
+        msgs.append({"id": "1", "messagetype": "Control/Typing", "properties": {}})
+        return httpx.Response(200, json={"messages": msgs, "_metadata": {"syncState": "x"}})
+
+    feed = TeamsActivityConnector(app_name=app_name, app_url="https://teams.cloud.microsoft/")
+    feed.transport = httpx.MockTransport(feed_handler)
+    runner = _runner_with(
+        tmp_path, feed, "teams-chatsvc", "https://teams.cloud.microsoft/api/chatsvc/amer/v1/users/ME/conversations/x?view=y"
+    )
+    res = _asyncio.run(runner.run_one(feed.key))
+    assert res["ok"] and res["created"] == 2, res  # reaction is skipped
+    with Session(engine) as s:
+        rows = s.exec(select(Notification).where(Notification.source_app == app_name)).all()
+        titles = sorted(r.title for r in rows)
+        assert titles == ["Mentioned you in Biology P3", "Replied in Biology P3"]
+        mention = next(r for r in rows if r.title.startswith("Mentioned"))
+        assert mention.sender == "Sam Patel" and mention.priority == "high" and not mention.read_state
+        assert mention.message == f"Lab partners {app_name} mention"
+
+    due_soon = (now + _td(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    due_later = (now + _td(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    hw = f"Cell diagram {app_name}"
+
+    def edu_handler(request):
+        path = request.url.path
+        if path.endswith("/me/classes"):
+            return httpx.Response(200, json={"value": [{"id": "C1", "displayName": "Biology"}]})
+        if path.endswith("/me/work"):
+            return httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"id": "A1", "classId": "C1", "displayName": hw, "dueDateTime": due_soon, "submissions": [{"status": "working"}]},
+                        {"id": "A2", "classId": "C1", "displayName": f"Done one {app_name}", "dueDateTime": due_later, "submissions": [{"status": "submitted"}]},
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    asg = TeamsAssignmentsConnector(app_name=app_name, app_url="https://teams.cloud.microsoft/")
+    asg.transport = httpx.MockTransport(edu_handler)
+    runner2 = _runner_with(
+        tmp_path / "b", asg, "teams-assignments", "https://assignments.edu.cloud.microsoft/api/v1.0/edu/me/work?$top=20"
+    )
+    (tmp_path / "b").mkdir(exist_ok=True)
+    res = _asyncio.run(runner2.run_one(asg.key))
+    assert res["ok"], res
+    assert res["tasks"]["created"] == 1, "only the unsubmitted assignment becomes a task"
+    with Session(engine) as s:
+        task = s.exec(select(Task).where(Task.title == f"[Biology] {hw}")).one()
+        assert task.due_date and not task.completed
+        row = s.exec(select(Notification).where(Notification.title == hw)).one()
+        assert row.indicator_type == "active_assignment" and row.priority == "high" and not row.read_state
+        assert row.message.startswith("Due ") and row.message.endswith("· Biology")
+
+
+def test_v016_connectors_follow_installed_apps(client: TestClient):
+    from app.connectors.runner import connector_classes_for_url
+
+    names = lambda url: [c.key for c in connector_classes_for_url(url)]  # noqa: E731
+    assert names("https://outlook.cloud.microsoft/mail/") == ["outlook-mail"]
+    assert names("https://teams.cloud.microsoft/") == ["teams-activity", "teams-chats", "teams-assignments"]
+    assert names("https://teams.live.com/v2/") == ["teams-activity", "teams-chats"]
+    assert names("https://mail.proton.me/u/0/inbox") == []
+
+    r = client.get("/api/v1/connectors")
+    assert r.status_code == 200 and r.json()["connectors"] == []  # test registry has only ProtonMail
+    assert client.post("/api/v1/connectors/nope/run").status_code == 404
+
+
+@pytest.fixture()
+def mint_browser(monkeypatch):
+    """A browser the server's own browser manager can launch (NODE_REC_CHROMIUM overrides)."""
+    from app.config import settings as _settings
+
+    custom = os.environ.get("NODE_REC_CHROMIUM", "")
+    if custom and Path(custom).is_file():
+        monkeypatch.setattr(_settings, "browser_executable_path", custom)
+        return
+    reason = _probe_chromium()
+    if reason:
+        _skip_or_fail(f"no launchable Playwright Chromium ({reason})")
+
+
+def test_v016_mint_captures_a_signed_request_from_a_headless_page(client: TestClient, mint_browser, monkeypatch):
+    import asyncio as _asyncio
+    import threading
+    import time as _time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from app.browser_stream import browser_stream_manager
+    from app.config import settings as _settings
+    from app.connectors.base import ConnectorError
+    from app.connectors.token_mint import TokenMint
+
+    token = _fake_jwt(exp=int(_time.time()) + 3000, aud="https://outlook.office.com", oid="me")
+    page = (
+        "<!doctype html><title>owa</title><script>"
+        "setTimeout(() => fetch('/owa/service.svc?action=GetFolder&app=Mail', {method: 'POST',"
+        f" headers: {{authorization: 'Bearer {token}', 'x-anchormailbox': 'PUID:1@t', action: 'GetFolder'}}}}), 300);"
+        "</script>"
+    )
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, body, ctype):
+            data = body.encode()
+            self.send_response(200)
+            self.send_header("content-type", ctype)
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if self.path.startswith("/mail"):
+                self._send(page, "text/html")
+            elif self.path == "/":  # Teams-like: the signed call comes from a SharedWorker
+                self._send("<!doctype html><script>new SharedWorker('/sw.js')</script>", "text/html")
+            elif self.path == "/sw.js":
+                self._send(
+                    "setTimeout(() => fetch('/api/chatsvc/amer/v1/users/ME/conversations/x',"
+                    f" {{headers: {{authorization: 'Bearer {token}'}}}}), 1500);",
+                    "text/javascript",
+                )
+            else:
+                self._send("<p>nothing signed here</p>", "text/html")
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("content-length") or 0))
+            self._send("{}", "application/json")
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+    monkeypatch.setattr(_settings, "connector_mint_timeout_seconds", 6.0)
+
+    async def go():
+        mint = TokenMint()
+        try:
+            auth = await mint.get("outlook", app_url=base + "/mail/", profile="default")
+            again = await mint.get("outlook", app_url=base + "/mail/", profile="default")
+            worker_auth = await mint.get("teams-chatsvc", app_url=base + "/", profile="default")
+            # A page that never makes a signed request: a clear timeout error.
+            from app.connectors import token_mint as tm
+
+            monkeypatch.setitem(tm.MINT_TARGETS, "outlook", tm.MintTarget("outlook", "Outlook", "/nothing", tm.MINT_TARGETS["outlook"].url_pattern))
+            with pytest.raises(ConnectorError) as err:
+                await mint.get("outlook", app_url=base + "/mail/", profile="default", force=True)
+            open_pages = [p.url for ctx in browser_stream_manager._contexts.values() for p in ctx.pages]
+            return auth, again, worker_auth, err.value, open_pages
+        finally:
+            await browser_stream_manager.shutdown()
+
+    try:
+        auth, again, worker_auth, err, open_pages = _asyncio.run(go())
+    finally:
+        srv.shutdown()
+    assert auth.headers["authorization"] == f"Bearer {token}"
+    assert auth.headers["x-anchormailbox"] == "PUID:1@t" and "action" not in auth.headers
+    assert auth.claims["aud"] == "https://outlook.office.com" and auth.origin == base
+    assert again is auth, "a valid token is reused, not re-minted"
+    assert worker_auth.url == base + "/api/chatsvc/amer/v1/users/ME/conversations/x", "SharedWorker requests are seen"
+    assert err.kind == "network" and "no signed request" in str(err)
+    assert not any(u.startswith(base) for u in open_pages), "the mint closes its page"

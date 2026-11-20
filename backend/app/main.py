@@ -37,6 +37,7 @@ from .calendar_engine import (
     sync_feed_from_url,
 )
 from .config import settings
+from .connectors.runner import connector_runner
 from .cron_scheduler import cron_scheduler
 from .database import engine, get_session, init_db
 from .diagnostics import evaluate_honest_session_state, probe_scraper_environment, probe_tailscale
@@ -246,9 +247,11 @@ async def lifespan(_: FastAPI):
         recalibrate_scheduled_blocks(session)
 
     cron_scheduler.start_background_loop()
+    connector_runner.start()
     try:
         yield
     finally:
+        await connector_runner.stop()
         await cron_scheduler.stop_background_loop()
         await browser_stream_manager.shutdown()
 
@@ -3917,6 +3920,46 @@ def delete_grade_tab(tab_id: str, session: Session = Depends(get_session)) -> Di
     if not ok:
         raise HTTPException(status_code=404, detail="Tab not found")
     return {"deleted": tab_id, "tabs": grades_control_service.list_tabs(session)}
+
+
+# ---------------------------------------------------------------------------
+# API connectors (plain-HTTP sources; tokens minted from the server browser)
+# ---------------------------------------------------------------------------
+@app.get("/api/v1/connectors")
+def connectors_status() -> Dict[str, Any]:
+    return connector_runner.status()
+
+
+@app.post("/api/v1/connectors/{key}/run")
+async def connectors_run(key: str) -> Dict[str, Any]:
+    if connector_runner.get(key) is None:
+        raise HTTPException(status_code=404, detail="Unknown connector")
+    return await connector_runner.run_one(key, force=True)
+
+
+@app.post("/api/v1/connectors/{key}/enabled")
+def connectors_set_enabled(key: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    try:
+        connector_runner.set_enabled(key, bool(payload.get("enabled")))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown connector")
+    return connector_runner.status()
+
+
+@app.post("/api/v1/connectors/{key}/mint")
+async def connectors_mint(key: str) -> Dict[str, Any]:
+    """Force a fresh token for this connector (opens the app headless for a few seconds)."""
+    from .connectors.base import ConnectorError
+    from .connectors.token_mint import token_mint
+
+    conn = connector_runner.get(key)
+    if conn is None or not conn.auth_target:
+        raise HTTPException(status_code=404, detail="Unknown connector")
+    try:
+        auth = await token_mint.get(conn.auth_target, app_url=conn.app_url, profile=conn.profile, force=True)
+    except ConnectorError as exc:
+        return {"ok": False, "error": str(exc), "error_kind": exc.kind}
+    return {"ok": True, "token": auth.describe()}
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ DEFAULT_DATA_DIR = BASE_ROOT / "data"
 
 class Settings(BaseSettings):
     app_name: str = "Node"
-    app_version: str = "0.15.2"
+    app_version: str = "0.16.0"
     environment: str = "production"
     local_timezone: str = Field(
         default="America/New_York",
@@ -77,6 +77,19 @@ class Settings(BaseSettings):
     browser_profiles_root: str = str(DEFAULT_DATA_DIR / "browser_profiles")
     browser_executable_path: str = ""  # Optional custom binary; auto-prefers /usr/bin/brave-browser
     scraper_state_path: str = str(DEFAULT_DATA_DIR / "scraper_state" / "scraper_state.json")
+
+    # API connectors (backend/app/connectors): plain-HTTP fetchers that replace
+    # always-on tabs. The browser profile is only used briefly to mint tokens.
+    connectors_enabled: bool = True
+    connectors_state_path: str = str(DEFAULT_DATA_DIR / "connectors.json")
+    connector_poll_seconds: int = 300
+    connector_assignments_poll_seconds: int = 1800
+    # First sync only imports mail/activity this recent (unread items always come in).
+    connector_backfill_days: int = 3
+    # How long a mint may keep a headless page open waiting for a signed request.
+    connector_mint_timeout_seconds: float = 45.0
+    # Teams "Assignments" app deep link used to mint the assignments token.
+    teams_assignments_app_id: str = "66aeee93-507d-479a-a3ef-8f494af43945"
 
     # Default Local / Remote Ollama Endpoint (additional Ollama & Cloud APIs live in ai_providers.json).
     # One Ollama serves BOTH models Node uses, picked by name per request:
