@@ -1091,6 +1091,7 @@ html:not(.keep-tiled-win-bars) .node-win.is-tiled > .node-win-bar {
 .text-sky-200 { color: #bae6fd; }
 .text-violet-200 { color: #ddd6fe; }
 .bg-emerald-500\/15 { background-color: rgba(16, 185, 129, 0.15); }
+.bg-emerald-400 { background-color: #34d399; } /* status dots (not in the prebuilt Tailwind file) */
 .border-emerald-500\/35 { border-color: rgba(16, 185, 129, 0.35); }
 .text-emerald-200 { color: #a7f3d0; }
 .bg-teal-500\/15 { background-color: rgba(20, 184, 166, 0.15); }
