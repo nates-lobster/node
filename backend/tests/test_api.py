@@ -3276,3 +3276,26 @@ def test_v013_tagging_degrades_to_per_tag_questions(monkeypatch, typed):
     finally:
         decision_gate.invalidate()
 
+
+def test_v013_autosort_keeps_user_corrected_tags(client: TestClient):
+    created = client.post(
+        "/api/v1/notifications",
+        json={
+            "source_app": "University Mail",
+            "title": "Your weekly coupon digest",
+            "message": "Unsubscribe any time. 20% off sale this week.",
+            "indicator_type": "dom_badge",
+        },
+    )
+    assert created.status_code == 201
+    nid = created.json()["id"]
+    moved = client.post(f"/api/v1/inbox/{nid}/tags", json={"tag": "Professors", "learn": False})
+    assert moved.status_code == 200 and moved.json()["notification"]["tag_corrected_by_user"] is True
+
+    res = client.post("/api/v1/notifications/autosort")
+    assert res.status_code == 200
+    assert res.json()["engines_used"].get("user", 0) >= 1
+    rows = client.get("/api/v1/notifications").json()
+    rows = rows if isinstance(rows, list) else rows.get("notifications", rows.get("items", []))
+    row = next(r for r in rows if r["id"] == nid)
+    assert row["category"] == "Professors"

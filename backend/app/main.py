@@ -3118,7 +3118,8 @@ async def autosort_inbox_notifications(
     """
     Re-categorize active Inbox notifications with the decision model first,
     falling back to the chat model, then deterministic rules, honoring all
-    global + per-app custom Inbox categories.
+    global + per-app custom Inbox categories. Items whose tags the user
+    corrected keep their category (`tag_corrected_by_user` is authoritative).
     """
     stmt = select(Notification).where(Notification.status == "active").order_by(Notification.id.desc()).limit(limit)
     rows = list(session.exec(stmt).all())
@@ -3129,6 +3130,9 @@ async def autosort_inbox_notifications(
     updated_count = 0
     for n in rows:
         if n.indicator_type == "ping_only":
+            continue
+        if n.tag_corrected_by_user:
+            engines_used["user"] = engines_used.get("user", 0) + 1
             continue
         res = await model_router.categorize_item(
             source_app=n.source_app,
