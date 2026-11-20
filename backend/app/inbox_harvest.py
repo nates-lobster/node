@@ -326,12 +326,7 @@ def merge_duplicate_notifications(
         group.sort(key=lambda n: (n.timestamp or datetime.now(timezone.utc)))
         keep = group[0]
         dupes = group[1:]
-        tag_union: List[str] = []
-        merged_ids: List[int] = []
-        for n in group:
-            tag_union.extend(parse_tags_csv(n.tags_csv))
-            if n.id is not None:
-                merged_ids.append(n.id)
+        merged_ids: List[int] = [n.id for n in group if n.id is not None]
         # read = all read; important = any important; priority = strongest.
         keep.read_state = all(bool(n.read_state) for n in group)
         keep.is_important = any(n.is_important is not False for n in group)
@@ -346,8 +341,14 @@ def merge_duplicate_notifications(
             {*(parse_tags_csv(keep.dedupe_sources)), *(n.source_app for n in dupes if n.source_app)}
         )[:400]
         keep.merged_count = int(sum(int(n.merged_count or 1) for n in group))
-        keep.tags_csv = tags_to_csv(tag_union)
-        keep.category = (parse_tags_csv(keep.tags_csv) or [keep.category or "General"])[0]
+        if not dry_run:
+            from .inbox_ingest import apply_merged_tags
+
+            apply_merged_tags(
+                keep,
+                corrected=next((n for n in group if n.tag_corrected_by_user), None),
+                first_tagged=next((n for n in group if parse_tags_csv(n.tags_csv)), None),
+            )
 
         info = {
             "dedupe_key": key,

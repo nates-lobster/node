@@ -864,6 +864,19 @@ def ingest_ping(
         if is_zk
         else importance_service.build_one_line_summary(payload.source_app, title, message, effective_indicator)
     )
+    from .inbox_ingest import absorb_or_none
+
+    dup = absorb_or_none(
+        session,
+        source_app=payload.source_app,
+        title=title,
+        message=message or "",
+        indicator_type=effective_indicator,
+    )
+    if dup is not None:
+        session.commit()
+        reconcile_app_unread_counts(session)
+        return {"ok": True, "notification_id": dup.id, "status": hb.status, "zero_knowledge": is_zk, "title": dup.title, "merged": True}
     notif = Notification(
         source_app=payload.source_app,
         title=title,
@@ -1382,6 +1395,19 @@ async def create_notification(payload: NotificationCreate, session: Session = De
             payload.source_app, clean_title, clean_msg, payload.indicator_type
         )
     )
+    from .inbox_ingest import absorb_or_none
+
+    dup = absorb_or_none(
+        session,
+        source_app=payload.source_app,
+        title=clean_title,
+        message=clean_msg or "",
+        indicator_type=payload.indicator_type,
+    )
+    if dup is not None:
+        session.commit()
+        session.refresh(dup)
+        return dup
     notif = Notification(
         source_app=payload.source_app,
         title=clean_title,
@@ -3608,10 +3634,20 @@ def dedupe_inbox(
     window_hours: Optional[int] = Query(default=None, ge=1, le=720),
     session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
+    """Merge duplicate Inbox rows: look-alike matching first, then exact keys."""
     from .inbox_harvest import backfill_dedupe_keys, merge_duplicate_notifications
+    from .inbox_ingest import fuzzy_merge_window
 
     backfill_dedupe_keys(session)
-    return merge_duplicate_notifications(session, window_hours=window_hours, dry_run=dry_run)
+    fuzzy = fuzzy_merge_window(session, window_hours=window_hours or 336, dry_run=dry_run)
+    exact = merge_duplicate_notifications(session, window_hours=window_hours or 336, dry_run=dry_run)
+    return {
+        **exact,
+        "groups": fuzzy["groups"] + exact["groups"],
+        "merged_groups": fuzzy["merged_groups"] + exact["merged_groups"],
+        "removed": fuzzy["removed"] + exact["removed"],
+        "rekeyed": fuzzy["rekeyed"],
+    }
 
 
 @app.post("/api/v1/inbox/{notification_id}/tags")

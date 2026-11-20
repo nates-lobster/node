@@ -1,4 +1,4 @@
-# Node (v0.13.1)
+# Node (v0.14.0)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -25,6 +25,16 @@ docker compose up -d --build         # http://<server>:8080
 writes lives in `data/` (SQLite DB, uploads, browser sessions, credentials). It is
 gitignored and host-mounted, so `git pull` updates the code and never touches your
 data.
+
+---
+
+## What's New in v0.14.0
+
+**One email, one row.** Copies of the same message (pop-up, page row, sender
+glued to the subject, another app) are merged as they arrive, with or without
+the AI; the decision model settles close calls. Merged emails no longer pile
+up every copy's tags. Run **Inbox → Merge duplicates** once after updating to
+clean up old copies. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 

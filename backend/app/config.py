@@ -10,7 +10,7 @@ DEFAULT_DATA_DIR = BASE_ROOT / "data"
 
 class Settings(BaseSettings):
     app_name: str = "Node"
-    app_version: str = "0.13.1"
+    app_version: str = "0.14.0"
     environment: str = "production"
     local_timezone: str = Field(
         default="America/New_York",

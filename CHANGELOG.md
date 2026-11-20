@@ -5,6 +5,35 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.14.0 — 2026-11-20
+
+Fixes "one message shows up five times".
+
+### Manual steps
+- After updating, open **Inbox → Merge duplicates** once. It cleans up the
+  copies already stored from the last 14 days.
+
+### Fixed
+- **Duplicates stop at the door.** The tab code can report one email five ways
+  (page row, JSON, websocket, desktop pop-up, unread counter), often as
+  "Sender — subject" or with the sender as the title. Every path now checks
+  recent rows first and folds a look-alike into the existing row. This needs
+  no AI, so it works while the models are offline. Word order, sender labels
+  and preview length don't matter, but numbers do (Unit 5 ≠ Unit 6).
+- **The decision model judges close calls**, e.g. "essay feedback posted" vs.
+  "essay due tomorrow". It's asked "same message?" and only a confident yes
+  merges.
+- **A merged email no longer shows under every copy's tag.** Merges used to
+  combine the tags of all copies. Now your correction wins, otherwise the
+  merged row is re-tagged once from its fuller content.
+- A duplicate arriving later no longer marks a read message unread again.
+- Unread-counter pings update one row per app instead of adding a row each
+  time the count changes.
+- Intercepted items keep the sender in the sender field instead of gluing it
+  onto the subject.
+
+---
+
 ## 0.13.1 — 2026-11-19
 
 ### Changed

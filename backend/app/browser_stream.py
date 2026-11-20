@@ -23,6 +23,8 @@ from .database import engine
 from .grades_service import grades_service
 from .importance_filter import importance_service, strip_html_tags
 from .model_router import model_router, scrub_notification_artifacts
+from .decision_gate import compute_dedupe_key
+from .inbox_ingest import absorb_or_none
 from .models import Notification, ScraperHeartbeat
 from .ollama_client import ollama_client
 from .seed import reconcile_app_unread_counts
@@ -632,13 +634,17 @@ def _scan_json_for_unread_and_snippets(
         if _is_explicitly_unread_dict(obj):
             primary_txt = str(msg_title or msg_body or "").strip()
             if is_intelligible_text(primary_txt):
-                item_title = f"{sender_name} — {primary_txt}" if (sender_name and sender_name not in primary_txt) else primary_txt
+                # Keep the subject clean and the sender separate: gluing them
+                # ("Ms. Lee — Lab report") made the same email look different
+                # from its other copies and broke duplicate detection.
+                item_title = primary_txt
                 detail_txt = str(msg_body or "").strip() if (msg_title and msg_body and msg_body != msg_title and is_intelligible_text(str(msg_body))) else ""
                 structured_items.append(
                     {
                         "kind": "unread_message",
                         "title": item_title[:180],
                         "detail": detail_txt[:340],
+                        "sender": str(sender_name or "")[:120],
                     }
                 )
                 if item_title[:200] not in snippets:
@@ -1051,7 +1057,19 @@ class ServerBrowserStreamManager:
                     unread_count=1,
                     strict_zero_knowledge=False,
                 )
+                item_sender = str(item.get("sender") or "").strip()
                 eff_ind = kind if kind == "active_assignment" else indicator
+                # Same email already arrived through another path (pop-up, page
+                # row, JSON)? Fold it into that row instead of adding a copy.
+                if absorb_or_none(
+                    session,
+                    source_app=tab.app_name,
+                    title=formatted_title,
+                    message=formatted_msg,
+                    sender=item_sender,
+                    indicator_type=eff_ind,
+                ):
+                    continue
                 is_imp, imp_score, imp_reason = importance_service.classify(
                     tab.app_name, formatted_title, formatted_msg, eff_ind
                 )
@@ -1074,6 +1092,8 @@ class ServerBrowserStreamManager:
                     category="School" if kind == "active_assignment" else "General",
                     ai_processed=False,
                     indicator_type=eff_ind,
+                    sender=item_sender[:200] or None,
+                    dedupe_key=compute_dedupe_key(tab.app_name, formatted_title, sender=item_sender, body=formatted_msg),
                     raw_payload=json.dumps({"fp": fp, "kind": kind}),
                 )
                 session.add(notif)
@@ -1103,6 +1123,8 @@ class ServerBrowserStreamManager:
                 session.add(hb)
                 session.commit()
                 reconcile_app_unread_counts(session)
+            else:
+                session.commit()  # persist merges into existing rows
 
         if added_titles:
             tab.last_unread = max(tab.last_unread, len(added_titles))
@@ -1342,8 +1364,9 @@ class ServerBrowserStreamManager:
                         or ""
                     ).strip()
                     if is_intelligible_text(body):
-                        title_str = f"{sender} — {body[:120]}" if sender else body[:140]
-                        structured_items.append({"kind": "unread_message", "title": title_str, "detail": ""})
+                        structured_items.append(
+                            {"kind": "unread_message", "title": body[:140], "detail": "", "sender": str(sender or "")[:120]}
+                        )
 
             if structured_items and not tab.zero_knowledge:
                 self._ingest_extracted_items(tab, structured_items, indicator="websocket_push")
@@ -1481,6 +1504,14 @@ class ServerBrowserStreamManager:
         now_utc = datetime.now(timezone.utc)
         created_id: Optional[int] = None
         with Session(engine) as session:
+            if emit_notification and absorb_or_none(
+                session,
+                source_app=tab.app_name,
+                title=title,
+                message=message,
+                indicator_type="ping_only" if tab.zero_knowledge else indicator,
+            ):
+                emit_notification = False  # merged into an existing row
             if emit_notification:
                 fp = compute_item_fingerprint(tab.app_name, title)
                 eff_ind = "ping_only" if tab.zero_knowledge else indicator
@@ -1492,8 +1523,6 @@ class ServerBrowserStreamManager:
                     if tab.zero_knowledge
                     else importance_service.build_one_line_summary(tab.app_name, title, message, eff_ind)
                 )
-                from .decision_gate import compute_dedupe_key
-
                 notif = Notification(
                     source_app=tab.app_name,
                     title=title,
@@ -1644,6 +1673,12 @@ class ServerBrowserStreamManager:
         # Collapse duplicates produced by multiple feeds / sender variants BEFORE
         # the Inbox UI ever sees them. One real event = one row with merged tags.
         if updated_count:
+            try:
+                from .inbox_ingest import confirm_borderline_with_gate
+
+                await confirm_borderline_with_gate([s["id"] for s in snapshots if s.get("id")])
+            except Exception as exc:  # pragma: no cover - never break ingest
+                logger.debug("Decision-model duplicate check skipped: %s", exc)
             try:
                 from .inbox_harvest import merge_duplicate_notifications
 
