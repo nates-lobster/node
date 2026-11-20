@@ -71,6 +71,9 @@ services:
       - ./data/scraper_state:/data/state
       - ./dashboard/wallpapers:/dashboard/wallpapers:ro
       - ./docs:/docs:ro
+      # The browser extension source, so Settings -> Download extension works
+      # (the image itself only contains backend/app).
+      - ./extension:/extension:ro
       - ${TAILSCALE_SOCK_DIR:-./data/tailscale_sock}:/host_tailscale:ro
     ports:
       - "${BACKEND_BIND_IP:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
