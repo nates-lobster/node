@@ -3510,3 +3510,21 @@ def test_v014_numbers_keep_similar_school_items_apart():
     b = content_tokens("Unit 6 quiz due tomorrow", "Algebra II, period 3", source_app="Schoology")
     assert not is_same(a, b)
     assert is_same(a, content_tokens("Mr. Ortiz — Unit 5 quiz due tomorrow", "", source_app="Schoology"))
+
+
+def test_v0141_extension_zip_ships_the_api_recorder(client: TestClient):
+    """The downloadable extension includes the recorder, its permissions, and no test files."""
+    import io as _io
+    import json as _json
+    import zipfile as _zipfile
+
+    r = client.get("/api/v1/ext/package.zip")
+    assert r.status_code == 200, r.text
+    zf = _zipfile.ZipFile(_io.BytesIO(r.content))
+    names = set(zf.namelist())
+    for f in ("shape.js", "page-hook.js", "panel.js", "recorder-bg.js"):
+        assert f"node-webos-extension/recorder/{f}" in names
+    assert not any(n.endswith(".test.mjs") for n in names)
+    manifest = _json.loads(zf.read("node-webos-extension/manifest.json"))
+    assert {"scripting", "webRequest"} <= set(manifest["permissions"])
+    assert "debugger" not in manifest["permissions"]

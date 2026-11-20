@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 import io
 import logging
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -4167,7 +4168,7 @@ async def ext_bootstrap(session: Session = Depends(get_session)) -> Dict[str, An
     }
 
 
-EXTENSION_DIR = Path(__file__).resolve().parents[2] / "extension"
+EXTENSION_DIR = Path(os.getenv("EXTENSION_SOURCE_DIR") or (Path(__file__).resolve().parents[2] / "extension"))
 
 
 def _build_extension_zip() -> bytes:
@@ -4178,7 +4179,7 @@ def _build_extension_zip() -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(src.rglob("*")):
-            if not path.is_file() or "__pycache__" in path.parts:
+            if not path.is_file() or "__pycache__" in path.parts or path.name.endswith(".test.mjs"):
                 continue
             zf.write(path, arcname=str(Path("node-webos-extension") / path.relative_to(src)))
     return buf.getvalue()

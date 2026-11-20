@@ -37,6 +37,11 @@
   <button id="sync">Sync session now</button>
   <button id="open" class="ghost">Open dashboard</button>
   <button id="opts" class="ghost">Settings</button>
+  <h1 style="margin-top:16px">API <span>Recorder</span></h1>
+  <div class="row"><span class="muted">Status</span><span id="rec-status" class="pill idle">Off</span></div>
+  <div class="muted" id="rec-hint" style="font-size:11px;line-height:1.5">Open the site (e.g. Outlook), then start. A panel appears on the page to mark the calls that matter. Saves structure only, no messages, tokens or cookies.</div>
+  <button id="rec-toggle">Record this tab</button>
+  <button id="rec-reload" class="ghost" style="display:none">Reload tab (catch startup calls)</button>
   <script src="popup.js"></script>
 </body>
 </html>

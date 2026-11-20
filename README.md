@@ -1,4 +1,4 @@
-# Node (v0.14.0)
+# Node (v0.15.0)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -25,6 +25,19 @@ docker compose up -d --build         # http://<server>:8080
 writes lives in `data/` (SQLite DB, uploads, browser sessions, credentials). It is
 gitignored and host-mounted, so `git pull` updates the code and never touches your
 data.
+
+---
+
+## What's New in v0.15.0
+
+**API Recorder, a tool for building connectors.** Instead of digging through
+DevTools, click the extension → **Record this tab** on Outlook, Teams or any
+site, use the site normally, and tick the calls that matter. The on-page panel
+can also **Watch my next action** and highlight just the calls that fired.
+**Save marked** writes a JSON file that describes the API's structure (URLs,
+header names, cookie names, JSON keys and types) and leaves out messages,
+tokens and cookie values. Settings → **Download extension** now works in Docker
+too. See [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 

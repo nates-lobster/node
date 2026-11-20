@@ -1,15 +1,19 @@
 /**
  * Node WebOS — background service worker (MV3).
  *
- * Two jobs, both opt-in and scoped to the user's own server:
+ * Three jobs, all opt-in and scoped to the user's own server:
  *   1. Keep the server's session alive by copying the cookies Brave/Chromium
  *      already holds for the LMS / mail providers. The server never sees the
  *      whole jar, only the hostnames the user enabled.
  *   2. Run periodic "heartbeats" so the newtab page knows the server is up.
+ *   3. API Recorder (recorder/): on request, record one tab's API calls as a
+ *      redacted structure-only file the user saves locally.
  *
  * Nothing is ever sent to a third party. `nodeBaseUrl` is user-configured
  * and must be a loopback/Tailscale/private address by default.
  */
+
+import { handleRecorderMessage } from "./recorder/recorder-bg.js";
 
 const DEFAULTS = {
   nodeBaseUrl: "http://127.0.0.1:8080",
@@ -23,7 +27,10 @@ const DEFAULTS = {
     "classroom.google.com",
     "mail.google.com",
     "outlook.office.com",
-    "outlook.live.com"
+    "outlook.cloud.microsoft",
+    "outlook.live.com",
+    "teams.microsoft.com",
+    "teams.cloud.microsoft"
   ],
   lastSync: null,
   lastSyncStatus: "never",
@@ -193,6 +200,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
       if (!msg || typeof msg.type !== "string") return sendResponse({ ok: false });
+      if (msg.type.startsWith("rec:")) return sendResponse(await handleRecorderMessage(msg, _sender));
       if (msg.type === "node:getConfig") return sendResponse({ ok: true, config: await getConfig() });
       if (msg.type === "node:setConfig") return sendResponse({ ok: true, config: await setConfig(msg.patch || {}), then: await ensureAlarm() });
       if (msg.type === "node:syncNow") return sendResponse(await syncSession("manual"));

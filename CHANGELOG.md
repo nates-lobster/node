@@ -5,6 +5,51 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.15.0 — 2026-11-20
+
+A tool for building connectors from the sites you're already logged into.
+
+### Manual steps
+- **Reload the extension** (`brave://extensions` → Node WebOS → ↻, or install
+  the new zip). It asks for two new permissions, *scripting* and *webRequest*,
+  which the recorder needs. They're only used while you're recording.
+- Docker users: `git pull && docker compose up -d --build` also mounts
+  `./extension`, so **Settings → Download extension** stops returning 404.
+
+### Added
+- **API Recorder** (extension popup → **Record this tab**). It records the
+  current site's API calls and groups them one row per call type, so ~300
+  requests become ~20 rows. It flags the likely-useful calls (lists of
+  messages, `service.svc`, `chatsvc`, GraphQL…) and hides telemetry.
+  - **Watch my next action:** do one thing in the site (open an email) and the
+    panel highlights just the calls that fired. Name it, and they're marked.
+  - **Save marked / Copy** gives you a JSON file with each call's method,
+    redacted URL, request header *names*, cookie *names*, the auth style
+    (bearer, OWA canary, Skype token, cookies) and the request/response JSON
+    *shape*. Personal text becomes `<text N>`, emails `<email>`, and ids and
+    tokens are masked. Header values are only kept for protocol headers
+    (`action`, `content-type`…).
+  - It catches the calls a page makes while loading (reload once after you
+    start), calls made by the site's background workers, and OWA's
+    `x-owa-urlpostdata` request bodies.
+  - Nothing is uploaded. Data stays in the browser session until you save it
+    and is cleared when the browser closes.
+
+### Fixed
+- `GET /api/v1/ext/package.zip` returned 404 under Docker because the image
+  doesn't contain `extension/`. Compose now mounts it read-only
+  (`EXTENSION_SOURCE_DIR` overrides the path). Test files are left out of the
+  zip.
+- Cookie sync now also covers `outlook.cloud.microsoft`, `teams.microsoft.com`
+  and `teams.cloud.microsoft` (new installs; existing installs keep their
+  saved domain list, so add these in the extension's Settings).
+
+### Developer
+- CI runs `node --check` on the extension and `node --test` on the recorder
+  (redaction + background logic with `chrome.*` stubbed).
+
+---
+
 ## 0.14.0 — 2026-11-20
 
 Fixes "one message shows up five times".

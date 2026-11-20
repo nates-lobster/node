@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Node WebOS New Tab",
-  "version": "0.14.0",
-  "description": "Runs Node WebOS as your new-tab page and shares your local browser session with your own server so server-side logins stop expiring.",
+  "version": "0.15.0",
+  "description": "Runs Node WebOS as your new-tab page, shares your local browser session with your own server so server-side logins stop expiring, and can record a site's API calls (structure only) to help build connectors.",
   "permissions": [
     "cookies",
     "storage",
     "tabs",
-    "alarms"
+    "alarms",
+    "scripting",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"

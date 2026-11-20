@@ -32,4 +32,39 @@ $("sync").addEventListener("click", async () => {
 $("open").addEventListener("click", () => chrome.runtime.sendMessage({ type: "node:openServer" }));
 $("opts").addEventListener("click", () => chrome.runtime.openOptionsPage());
 
+// ---------------------------------------------------------- API Recorder
+async function activeTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab;
+}
+
+async function paintRecorder() {
+  const st = await chrome.runtime.sendMessage({ type: "rec:status" });
+  const tab = await activeTab();
+  const here = st && st.active && tab && st.tabId === tab.id;
+  const pill = $("rec-status");
+  pill.textContent = st && st.active ? (here ? `Recording · ${st.total} calls` : "Recording another tab") : "Off";
+  pill.className = "pill " + (st && st.active ? "ok" : "idle");
+  $("rec-toggle").textContent = st && st.active ? "Stop recording" : "Record this tab";
+  $("rec-reload").style.display = here ? "block" : "none";
+}
+
+$("rec-toggle").addEventListener("click", async () => {
+  const st = await chrome.runtime.sendMessage({ type: "rec:status" });
+  if (st && st.active) {
+    await chrome.runtime.sendMessage({ type: "rec:stop" });
+  } else {
+    const tab = await activeTab();
+    const res = await chrome.runtime.sendMessage({ type: "rec:start", tabId: tab.id, url: tab.url });
+    $("rec-hint").textContent = res && res.ok ? (res.warning || "Recording. Reload the tab once, then use the panel on the page.") : (res && res.error) || "Could not start.";
+  }
+  paintRecorder();
+});
+$("rec-reload").addEventListener("click", async () => {
+  const tab = await activeTab();
+  if (tab) chrome.tabs.reload(tab.id);
+  window.close();
+});
+
 paint();
+paintRecorder();

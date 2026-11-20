@@ -253,6 +253,37 @@ matches the running server).
 Anything you add to the extension must not widen that token's blast radius. A
 new route goes into `GUARD_SCOPES["extension"]`, never into a broader scope.
 
+### API Recorder (`extension/recorder/`, 0.15)
+
+A connector-building aid. It talks to no server: the output is a file the user
+saves.
+
+```
+popup "Record this tab" ─► recorder-bg.js (service worker)
+                             ├─ registerContentScripts(site/*):
+                             │    shape.js + page-hook.js  @document_start, MAIN world
+                             │    panel.js                 @document_idle, isolated world
+                             └─ webRequest (tab, or tabId -1 + initiator for workers):
+                                  method, URL, request body, header NAMES, cookie NAMES
+page-hook.js ─ wraps fetch/XHR, shapes response bodies in-page ─► postMessage
+panel.js ─ relays events (rec:page), shows groups (rec:groups), marks (rec:mark),
+           saves the export (rec:export) as a Blob download
+```
+
+- **Redaction lives in one file** (`shape.js`), used by the page, the worker and
+  the Node tests. Keep structure (keys, types, header/cookie names, protocol
+  words like `FindConversationJsonRequest:#Exchange`) and drop content.
+  Values under content keys (`query`, `subject`, `name`, `email`…) are always
+  masked.
+- Raw response bodies never leave the page. Header values are only read in the
+  worker, and only for the `SAFE_HEADER_VALUES` allowlist.
+- State is kept in `chrome.storage.session` (memory only, cleared when the
+  browser closes) and capped at 4000 requests.
+- The webRequest listeners are registered at startup (an MV3 rule) and do
+  nothing unless a recording is active. The content scripts are unregistered
+  on Stop or when the tab closes.
+- Tests: `node --test extension/recorder/shape.test.mjs extension/recorder/recorder-bg.test.mjs` (CI).
+
 ---
 
 ## 11. Common failure → cause
