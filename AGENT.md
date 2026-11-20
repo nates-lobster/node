@@ -167,7 +167,8 @@ All paths relative to repo root.
 | Settings | `backend/app/os_settings.py` | 100+ keys, `sanitize_patch` whitelist |
 | Schema | `backend/app/models.py`, `database.py` | SQLModel tables + boot migrations |
 | UI | `backend/app/ui/os_shell.html`, `os_app.js` | shell markup (Alpine `x-show` views) + methods/state |
-| Extension | `extension/` | MV3, served as a zip by the server |
+| Extension | `extension/` | MV3, served as a zip by the server (compose mounts it at `/extension`) |
+| API Recorder | `extension/recorder/` | Records one tab's API calls as a redacted, structure-only file: `shape.js` (redaction, shared by every part + Node tests), `page-hook.js` (MAIN-world fetch/XHR wrapper, shapes response bodies in-page), `recorder-bg.js` (webRequest capture + grouping, `rec:*` messages), `panel.js` (on-page marking UI). Tests: `node --test extension/recorder/*.test.mjs` |
 | Auth + guard tokens | `backend/app/auth.py`, `auth_cli.py` | sessions, `GUARD_SCOPES` (which token opens which route), CLI |
 | Apps registry | `backend/app/apps_manager.py` | installed apps (`data/apps_config.yaml`), App Library catalog |
 
