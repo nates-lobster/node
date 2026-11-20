@@ -3514,25 +3514,29 @@
                     </template>
                   </div>
 
-                  <!-- Primary / Fast Role Routing + Thinking -->
+                  <!-- Decision + Chat model routing + Thinking -->
                   <div class="studio-card rounded-xl p-3 space-y-2">
                     <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <div>
-                        <label class="block text-[10.5px] text-subtle-ink mb-0.5">Primary Chat / Tool Model</label>
-                        <select x-model="aiProvidersState.routing.primary_model" @change="saveModelRoleRouting()" class="w-full rounded-lg studio-input px-2 py-1 font-mono text-[11px]">
-                          <template x-for="mo in allAvailableChatModels" :key="'pr-m-' + mo.id">
+                        <label class="block text-[10.5px] text-subtle-ink mb-0.5">Decision model (tagging, priority, tool routing)</label>
+                        <select x-model="aiProvidersState.routing.decision_model" @change="saveModelRoleRouting()" class="w-full rounded-lg studio-input px-2 py-1 font-mono text-[11px]">
+                          <template x-for="mo in allAvailableDecisionModels" :key="'dm-m-' + mo.id">
                             <option :value="mo.id" x-text="mo.label"></option>
                           </template>
                         </select>
                       </div>
                       <div>
-                        <label class="block text-[10.5px] text-subtle-ink mb-0.5">Fast Tagger / Parser Model</label>
-                        <select x-model="aiProvidersState.routing.fast_model" @change="saveModelRoleRouting()" class="w-full rounded-lg studio-input px-2 py-1 font-mono text-[11px]">
-                          <template x-for="mo in allAvailableChatModels" :key="'fa-m-' + mo.id">
+                        <label class="block text-[10.5px] text-subtle-ink mb-0.5">Chat model (chat, tools, briefings)</label>
+                        <select x-model="aiProvidersState.routing.chat_model" @change="saveModelRoleRouting()" class="w-full rounded-lg studio-input px-2 py-1 font-mono text-[11px]">
+                          <template x-for="mo in allAvailableChatModels" :key="'ch-m-' + mo.id">
                             <option :value="mo.id" x-text="mo.label"></option>
                           </template>
                         </select>
                       </div>
+                    </div>
+                    <div class="flex items-start gap-1.5 text-[10.5px]" :class="decisionGateStatus.online ? 'text-accent' : 'text-subtle-ink'">
+                      <span class="h-2 w-2 rounded-full shrink-0 mt-1" :class="decisionGateStatus.online ? 'bg-emerald-400' : 'bg-slate-500'"></span>
+                      <span class="min-w-0 break-words" x-text="decisionGateStatus.online ? ('Decision model online: ' + (decisionGateStatus.model || 'd1') + (decisionGateStatus.capabilities && decisionGateStatus.capabilities.multiple === false ? ' (one yes/no question per tag)' : '')) : ('Decision model offline. Inbox uses the chat model. ' + (decisionGateStatus.detail || ''))"></span>
                     </div>
                     <label class="flex items-center justify-between gap-2 pt-1 cursor-pointer">
                       <span class="text-muted-ink">Enable Chain-of-Thought Thinking (auto-adapts per model)</span>
@@ -3927,7 +3931,7 @@
                         :class="osSettingsValue('decision_gate_prefer_for_tools', true) ? 'badge-accent' : 'studio-subcard text-muted-ink'"
                         x-text="osSettingsValue('decision_gate_prefer_for_tools', true) ? 'Decision gate: preferred' : 'Decision gate: fallback only'"
                       ></button>
-                      <span class="text-[10.5px] text-subtle-ink">Uses d1-2B when online, smallest fast model otherwise.</span>
+                      <span class="text-[10.5px] text-subtle-ink">Uses the decision model when online, the chat model otherwise.</span>
                     </div>
                     <div class="text-[10.5px] text-subtle-ink" x-text="extensionInfo.bridge_detail || ''"></div>
                   </div>
@@ -3944,8 +3948,8 @@
                   <p class="text-muted-ink leading-relaxed">All AI prompts run 100% on the server so closing your browser never interrupts a job. Use <strong>AI Instructions</strong> to edit <code>persona.md</code>, <code>self_improvement.md</code>, <code>shared_agent_log.md</code>, and custom Markdown files in one unified place. Rate replies with 👍 / 👎 to help the AI distil generalizable improvements without rigid overfitting.</p>
                 </div>
                 <div class="studio-subcard rounded-xl p-4 space-y-2">
-                  <div class="font-semibold text-accent">3. Inbox, Von Auto-Sort &amp; Isolated App Streaming</div>
-                  <p class="text-muted-ink leading-relaxed">Add web apps in <strong>Apps</strong> with isolated cookie profiles for multi-account sign-in. <strong>Inbox</strong> uses <strong>Von</strong> (<code>/v1/systemone</code>) first—and automatically falls back to your fastest small model—to rank priority and sort mail into custom categories you or the AI define.</p>
+                  <div class="font-semibold text-accent">3. Inbox, AI Auto-Sort &amp; Isolated App Streaming</div>
+                  <p class="text-muted-ink leading-relaxed">Add web apps in <strong>Apps</strong> with isolated cookie profiles for multi-account sign-in. <strong>Inbox</strong> uses your <strong>decision model</strong> (LFM3 d1 over <code>/v1/systemone</code>) first—and falls back to your chat model—to rank priority and sort mail into custom categories you or the AI define.</p>
                 </div>
                 <div class="studio-subcard rounded-xl p-4 space-y-2">
                   <div class="font-semibold text-accent">4. Shared Drive, Multi-LMS Grades &amp; Focus Guard</div>

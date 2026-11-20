@@ -33,16 +33,29 @@ That makes it ideal for three jobs:
    "mark that I have band practice on friday" into
    ``{title: "Band Practice", date: "2026-10-23", ...}``.
 
-Resolution order (all optional, zero-config degraded path)
-----------------------------------------------------------
-``settings.decision_base_url`` → ``settings.von_base_url`` → disabled
-(``available == False``; callers fall back to the fast/small Ollama model).
+Where it runs (zero-config default: your Ollama)
+-------------------------------------------------
+``DECISION_BASE_URL`` if set, otherwise the built-in Ollama provider
+(``OLLAMA_BASE_URL``). Ollama serves decision models such as ``d1`` at
+``/v1/systemone`` on the same port as the chat model, chosen by name per
+request. If no decision model answers, ``online`` is False and callers fall
+back to the chat model, then to deterministic rules.
+
+Model: routing ``decision_model`` (Settings → AI) > ``DECISION_MODEL`` >
+auto (the first decision model Ollama reports, else ``d1``; ``d1.2`` for the
+Liquid hosted API).
 
 Supported wire shapes
 ---------------------
-* Liquid hosted: ``POST {base}/v1/systemone`` (base = ``.../decisions``)
-* local server:  ``POST {base}/v1/systemone`` or ``POST {base}/systemone``
-* Von container: ``POST {base}/v1/systemone`` (identical TypeSafe wire protocol)
+* Ollama / llama.cpp: ``POST {base}/v1/systemone``
+* Liquid hosted:      ``POST {base}/v1/systemone`` (base = ``.../decisions``)
+
+Typed answers
+-------------
+Multi-select (``choice`` + ``multiple``) and text/date reads are not served by
+every runtime (llama.cpp only does noul/choice/score for d1-2B). The probe
+tests them separately, and callers degrade: tagging asks one yes/no question
+per tag instead of a multi-select, and skips text reads.
 
 The request body is always the documented System One shape::
 
@@ -86,7 +99,8 @@ def choice(
 
 
 def score_levels(instructions: str, levels: Sequence[str]) -> Dict[str, Any]:
-    return {"type": "score", "instructions": instructions, "levels": list(levels)}
+    # System One takes the ordered levels as `criteria` (a list), not `levels`.
+    return {"type": "score", "instructions": instructions, "criteria": list(levels)}
 
 
 def read_text(instructions: str) -> Dict[str, Any]:
@@ -423,11 +437,17 @@ class DecisionGate:
         base = (settings.decision_base_url or "").strip().rstrip("/")
         if base:
             return base
-        return (settings.von_base_url or "").strip().rstrip("/")
+        from .ai_providers import ai_provider_registry
+
+        return ai_provider_registry.default_ollama_base()
+
+    @property
+    def uses_ollama(self) -> bool:
+        return not (settings.decision_base_url or "").strip()
 
     @property
     def api_key(self) -> str:
-        return (settings.decision_api_key or settings.von_api_key or "").strip()
+        return (settings.decision_api_key or "").strip()
 
     @property
     def enabled(self) -> bool:
@@ -437,11 +457,37 @@ class DecisionGate:
     def model(self) -> str:
         if self._model:
             return self._model
-        m = (settings.decision_model or "auto").strip()
-        if m and m.lower() != "auto":
-            return m
-        # Hosted Liquid endpoint + local d1 servers both accept these aliases.
-        return "d1.2" if "liquid.ai" in self.configured_base else "d1"
+        from .ai_providers import ai_provider_registry
+
+        pref = ai_provider_registry.decision_model_preference()
+        if pref and pref.lower() != "auto":
+            return pref
+        if "liquid.ai" in self.configured_base:
+            return "d1.2"
+        seen = ai_provider_registry.discovered_decision_models(self.configured_base)
+        return seen[0] if seen else "d1"
+
+    def supports(self, capability: str) -> bool:
+        """Whether the live server answered this question type in the probe.
+
+        Call ``await ensure_ready()`` first: before the first probe this is False.
+        """
+        return bool(self._capabilities.get(capability))
+
+    async def ensure_ready(self) -> bool:
+        """Probe if needed (cached ~25s) so ``supports()`` reflects the live server."""
+        if not self.enabled:
+            return False
+        if not self._online or not self._capabilities:
+            await self.status()
+        return self._online
+
+    def invalidate(self) -> None:
+        """Forget the last probe (model or URL changed in Settings)."""
+        self._probe_at = 0.0
+        self._online = False
+        self._model = ""
+        self._capabilities = {}
 
     def _path_candidates(self) -> List[str]:
         base = self.configured_base
@@ -468,12 +514,8 @@ class DecisionGate:
         if force or (now - self._probe_at) > 25.0:
             self._probe_at = now
             self._online = False
-            self._detail = "Not configured (optional)"
             if not base:
-                self._detail = (
-                    "Optional — set DECISION_BASE_URL (e.g. http://localhost:8010 for local d1-2B, "
-                    "or https://api.liquid.ai/decisions with DECISION_API_KEY)"
-                )
+                self._detail = "No Ollama server or DECISION_BASE_URL configured"
             elif not settings.decision_enabled:
                 self._detail = "Disabled via DECISION_ENABLED=false"
             else:
@@ -484,7 +526,8 @@ class DecisionGate:
             "configured": bool(base),
             "enabled": bool(settings.decision_enabled),
             "base_url": base,
-            "model": self.model if self._online else "",
+            "source": "ollama" if self.uses_ollama else "custom",
+            "model": self.model,
             "path": self._resolved_path,
             "detail": self._detail,
             "confidence_threshold": settings.decision_confidence_threshold,
@@ -492,12 +535,25 @@ class DecisionGate:
             "protocol": "typesafe-systemone",
         }
 
+    async def _post(self, url: str, body: Dict[str, Any], timeout: float) -> Tuple[int, Any, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, json=body, headers=headers)
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = None
+        return resp.status_code, payload, (resp.text or "")[:200]
+
     async def _probe(self) -> None:
         base = self.configured_base
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        timeout = float(settings.decision_timeout_seconds or 6.0)
+        timeout = float(settings.decision_timeout_seconds or 12.0)
+        self._model = ""
 
         # 1) Discover the model list (also proves the server is alive).
         discovered: List[str] = []
@@ -515,14 +571,21 @@ class DecisionGate:
                                     discovered.append(str(mid))
         except Exception:
             pass
+        model = self.model
+        if model == "d1" and discovered:
+            from .ai_providers import is_decision_model
 
-        # 2) Live typed-question round trip. This is what actually matters:
+            found = next((m for m in discovered if is_decision_model(m)), "")
+            if found:
+                model = found
+
+        # 2) Core round trip (noul + choice). This decides online/offline:
         #    a generative model answers prose, a decision model returns `answers`.
         last_err = ""
         for path in self._path_candidates():
             url = f"{base}{path}" if path else base
             body = {
-                "model": self.model,
+                "model": model,
                 "state": "Gate self-test: the inbox is on fire and the exam is tomorrow.",
                 "questions": {
                     "online": noul("Is this situation urgent and time-sensitive?"),
@@ -533,34 +596,65 @@ class DecisionGate:
                 },
             }
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    resp = await client.post(url, json=body, headers=headers)
-                if resp.status_code >= 400:
-                    last_err = f"HTTP {resp.status_code} at {url}"
-                    continue
-                payload = resp.json()
-                answers = _extract_answers(payload)
-                if not answers:
-                    last_err = f"Reply from {url} had no typed `answers` block (is this a generative model?)"
-                    continue
-                self._resolved_base = base
-                self._resolved_path = path or "/"
-                self._online = True
-                self._model = str(payload.get("model") or self.model)
-                self._capabilities = {
-                    "noul": "online" in answers,
-                    "choice": "topic" in answers,
-                    "multiple": True,
-                    "text": True,
-                    "date": True,
-                }
-                mods = f" • models: {', '.join(discovered[:6])}" if discovered else ""
-                self._detail = f"Connected at {url} (model {self._model}){mods}"
-                return
+                code, payload, text = await self._post(url, body, timeout)
             except Exception as exc:  # pragma: no cover - network variance
                 last_err = f"{exc.__class__.__name__} at {url}"
+                continue
+            if code >= 400:
+                last_err = f"HTTP {code} at {url}: {text}"
+                if code == 404 and self.uses_ollama:
+                    last_err += (
+                        f" — is the decision model pulled (`ollama pull {model}`) and is Ollama new "
+                        "enough to serve /v1/systemone?"
+                    )
+                continue
+            answers = _extract_answers(payload)
+            if not answers:
+                last_err = f"Reply from {url} had no typed `answers` block (is `{model}` a chat model?)"
+                continue
+            self._resolved_base = base
+            self._resolved_path = path or "/"
+            self._online = True
+            self._model = str((payload or {}).get("model") or model)
+            self._capabilities = {"noul": "online" in answers, "choice": "topic" in answers}
+            await self._probe_typed(url, timeout)
+            caps = ", ".join(k for k, v in self._capabilities.items() if v)
+            self._detail = f"Connected at {url} (model {self._model}; answers: {caps})"
+            return
         self._online = False
         self._detail = last_err or "Unreachable"
+
+    async def _probe_typed(self, url: str, timeout: float) -> None:
+        """
+        Test the optional answer types one at a time. A runtime that rejects
+        an unknown question type fails the whole request, so each gets its own
+        call; a failure only turns that capability off.
+        """
+        state = "Reminder from Ms. Lee: the biology lab report is due 2026-03-14. Bring goggles."
+        probes = {
+            "multiple": (
+                choice(
+                    "Which topics does this message raise?",
+                    {"school": "Classes and coursework", "safety": "Safety equipment", "money": "Payments"},
+                    multiple=True,
+                ),
+                lambda a: isinstance(a.value, list),
+            ),
+            "text": (read_text("Who sent this reminder?"), lambda a: bool(a.text)),
+            "date": (read_date("When is the report due?"), lambda a: bool(re.search(r"\d{4}-\d{2}-\d{2}", a.text))),
+        }
+        for cap, (question, accept) in probes.items():
+            ok = False
+            try:
+                code, payload, _ = await self._post(
+                    url, {"model": self._model, "state": state, "questions": {"q": question}}, timeout
+                )
+                if code < 400:
+                    ans = _extract_answers(payload).get("q")
+                    ok = bool(ans is not None and accept(ans))
+            except Exception:
+                ok = False
+            self._capabilities[cap] = ok
 
     @property
     def online(self) -> bool:
@@ -706,7 +800,7 @@ async def tag_notification(
          "sender": str, "summary": str, "due_hint": str, "dedupe_key": str,
          "confidence": float, "engine": "lfm3-d1"}
 
-    or ``None`` when the gate is offline (caller falls back to the fast model).
+    or ``None`` when the gate is offline (caller falls back to the chat model).
     """
     register = list(tags or DEFAULT_TAG_REGISTRY)
     criteria = build_tag_criteria(register)
@@ -723,12 +817,25 @@ async def tag_notification(
         "body": (body or "")[:2400],
         "instruction": "Tag this Inbox item. Pick every tag that genuinely applies.",
     }
-    questions = {
-        "tags": choice(
+    # Multi-select when the runtime supports it; otherwise one yes/no per tag
+    # (noul is supported everywhere System One is).
+    if not await decision_gate.ensure_ready():
+        return None
+    use_multiple = decision_gate.supports("multiple")
+    use_text = decision_gate.supports("text")
+    use_date = decision_gate.supports("date")
+    tag_names = list(criteria.keys())[:60]
+    questions: Dict[str, Dict[str, Any]] = {}
+    if use_multiple:
+        questions["tags"] = choice(
             "Which tags apply to this item? Select every tag that applies (usually 1-3).",
             criteria,
             multiple=True,
-        ),
+        )
+    else:
+        for idx, name in enumerate(tag_names):
+            questions[f"tag_{idx}"] = noul(f"Does the tag '{name}' apply to this item? {criteria[name]}")
+    questions.update({
         "primary_category": choice(
             "Which single tag is the best primary category for the Inbox?",
             criteria,
@@ -745,26 +852,36 @@ async def tag_notification(
                 "low": "Optional reading, marketing, digests, social noise",
             },
         ),
-        "clean_title": read_text(
+    })
+    if use_text:
+        questions["clean_title"] = read_text(
             "Read the subject/title only, cleaned of UI junk, service prefixes and sender names. "
             "If the title is only a sender name, write a short subject from the body. Max 90 characters."
-        ),
-        "sender_name": read_text("Read the human or organization name that sent this item. Empty if unknown."),
-        "one_line": read_text(
+        )
+        questions["sender_name"] = read_text("Read the human or organization name that sent this item. Empty if unknown.")
+        questions["one_line"] = read_text(
             "Read or write ONE crisp sentence summarising what this item is about (max 140 chars). "
             "Prefer the actual content over the subject line."
-        ),
-        "due_hint": read_date(
+        )
+    if use_date:
+        questions["due_hint"] = read_date(
             "Read the date this item is due or happens, if explicitly stated in the text (YYYY-MM-DD). "
             "Empty if no date is stated. Do not guess."
-        ),
-    }
+        )
     answers = await decision_gate.ask(state, questions)
     if not answers:
         return None
 
     tag_list: List[str] = []
-    for lbl in (answers.get("tags").labels if answers.get("tags") else []):
+    picked_labels: List[str] = list(answers.get("tags").labels) if answers.get("tags") else []
+    if not use_multiple:
+        scored = []
+        for idx, name in enumerate(tag_names):
+            ans = answers.get(f"tag_{idx}")
+            if ans is not None and ans.is_yes:
+                scored.append((float(ans.confidence or 0.5), name))
+        picked_labels = [name for _, name in sorted(scored, reverse=True)[:4]]
+    for lbl in picked_labels:
         for piece in _TAG_SPLIT_RE.split(lbl):
             nm = _norm_tag(piece)
             if not nm:
@@ -801,7 +918,7 @@ async def tag_notification(
     confs = [
         float(a.confidence)
         for a in (
-            answers.get("tags"),
+            answers.get("tags") if use_multiple else None,
             answers.get("primary_category"),
             answers.get("priority"),
         )
@@ -869,13 +986,25 @@ async def plan_tools(
             "A question needing no tool should return no groups."
         ),
     }
-    questions: Dict[str, Dict[str, Any]] = {
-        "groups": choice(
+    if not await decision_gate.ensure_ready():
+        return None
+    use_multiple = decision_gate.supports("multiple")
+    group_names = list(group_criteria.keys())
+    questions: Dict[str, Dict[str, Any]] = {}
+    if use_multiple:
+        questions["groups"] = choice(
             "Which tool families must be called to fulfil this request? Select all that apply. "
             "Return no groups for pure questions, explanations, or small talk.",
             group_criteria,
             multiple=True,
-        ),
+        )
+    else:
+        for idx, g in enumerate(group_names):
+            questions[f"group_{idx}"] = noul(
+                f"Must a tool from the '{g}' family ({group_criteria[g]}) be called to fulfil this request? "
+                "No for pure questions, explanations, or small talk."
+            )
+    questions.update({
         "intent": choice(
             "What is the user's intent?",
             {
@@ -888,7 +1017,7 @@ async def plan_tools(
                 "web": "Search the web or read a webpage",
             },
         ),
-    }
+    })
 
     # Calendar slot extraction gets its own focused questions — this is what
     # stops an event from being created as "I have band practice on friday".
@@ -900,7 +1029,10 @@ async def plan_tools(
             re.IGNORECASE,
         )
     )
-    if wants_event and "create_calendar_event" in available:
+    # Slot reads need typed text/date answers; without them the chat model fills
+    # the fields itself (the tool still gets attached via the calendar group).
+    can_read_slots = decision_gate.supports("text") and decision_gate.supports("date")
+    if wants_event and "create_calendar_event" in available and can_read_slots:
         questions.update(
             {
                 "event_title": read_text(
@@ -937,7 +1069,13 @@ async def plan_tools(
         return None
 
     groups: List[str] = []
-    for lbl in (answers.get("groups").labels if answers.get("groups") else []):
+    group_labels: List[str] = list(answers.get("groups").labels) if answers.get("groups") else []
+    if not use_multiple:
+        group_labels = [
+            g for idx, g in enumerate(group_names)
+            if answers.get(f"group_{idx}") is not None and answers[f"group_{idx}"].is_yes
+        ]
+    for lbl in group_labels:
         for piece in _TAG_SPLIT_RE.split(lbl):
             nm = _norm_tag(piece)
             match = next((g for g in group_criteria if _norm_tag(g) == nm), None)
@@ -961,7 +1099,7 @@ async def plan_tools(
         tools.extend([n for n in TOOL_PLAN_GROUPS.get(g, []) if n in available])
 
     slots: Dict[str, Any] = {}
-    if "create_calendar_event" in available and wants_event:
+    if "create_calendar_event" in available and wants_event and can_read_slots:
         def _txt(key: str) -> str:
             a = answers.get(key)
             return (a.text if a else "").strip()
@@ -1002,7 +1140,11 @@ async def plan_tools(
             "location": _txt("event_location")[:200],
         }
 
-    conf = answers.get("groups").confidence if answers.get("groups") else 0.0
+    if use_multiple:
+        conf = answers.get("groups").confidence if answers.get("groups") else 0.0
+    else:
+        intent_ans = answers.get("intent")
+        conf = intent_ans.confidence if intent_ans is not None else 0.0
     return {
         "groups": groups,
         "tools": tools,

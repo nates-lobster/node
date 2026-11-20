@@ -215,8 +215,8 @@ async def sync_tasks_from_calendar_and_inbox(
                 cal_candidates_lines.append(f"- [Date: {due_d}, Source: {feed_name}] {ev.title}")
 
         if cal_candidates_lines:
-            # Ask fast AI to refine titles, durations, and priorities if online
-            ai_parsed = await model_router.fast_json(
+            # Ask the chat model to refine titles, durations, and priorities if online
+            ai_parsed = await model_router.chat_json(
                 system_prompt=(
                     f"Today is {today_str}. Below are upcoming Calendar / Schoology feed items. "
                     "Convert ONLY genuine assignments, exams to study for, deadlines, or deliverables into tasks "
@@ -313,7 +313,7 @@ async def sync_tasks_from_calendar_and_inbox(
                 f"- [Service: {n.source_app}] {n.title} | {(n.ai_summary or n.message or '')[:160]}"
                 for n in action_notifs[:20]
             )
-            ai_inbox = await model_router.fast_json(
+            ai_inbox = await model_router.chat_json(
                 system_prompt=(
                     f"Today is {today_str}. Inspect these unread Inbox notifications and extract ONLY concrete "
                     "tasks/actions the user needs to perform (e.g. reply to a specific person's question, submit an "

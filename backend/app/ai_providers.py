@@ -115,6 +115,34 @@ def _estimate_param_rank(model_name: str) -> float:
     return 4.0
 
 
+# Decision models (Liquid d1 family and Ollama's /v1/systemone lane) answer typed
+# questions with probabilities and cannot generate text. They must never be picked
+# as the chat model, and the decision gate prefers them automatically.
+_DECISION_MODEL_PREFIXES = ("d1", "lfm3-d1", "lfm3_d1", "nimble", "tev1")
+
+
+def is_decision_model(model_name: str) -> bool:
+    """True for System One decision models (`d1`, `d1:2b`, `d1-omni`, `hf.co/LiquidAI/d1-2B-GGUF`…)."""
+    low = (model_name or "").split("::", 1)[-1].strip().lower()
+    if not low:
+        return False
+    base = low.rsplit("/", 1)[-1].split(":", 1)[0]
+    if "decision" in base:
+        return True
+    return any(base == pfx or base.startswith(pfx + "-") or base.startswith(pfx + ".") or base.startswith(pfx + "_")
+               for pfx in _DECISION_MODEL_PREFIXES)
+
+
+def _clean_role_value(raw: Any) -> str:
+    val = str(raw or "").strip()
+    return val or "auto"
+
+
+# Pre-0.13 callers asked for "primary", "fast" or "briefing" models. There is now
+# exactly one generative model (the chat model); those names are aliases for it.
+CHAT_ROLE_ALIASES = {"chat", "primary", "fast", "briefing"}
+
+
 class AIProviderRegistry:
     """
     Universal Model & Provider Registry for Node v10.0:
@@ -132,8 +160,8 @@ class AIProviderRegistry:
         self._model_caps: Dict[str, Dict[str, bool]] = {}
 
     def _default_state(self) -> Dict[str, Any]:
-        env_primary = (settings.ollama_model or "auto").strip() or "auto"
-        env_fast = (settings.ollama_fast_model or "auto").strip() or "auto"
+        env_chat = settings.effective_chat_model
+        env_decision = _clean_role_value(settings.decision_model)
         providers: List[Dict[str, Any]] = [
             {
                 "id": "ollama-default",
@@ -177,9 +205,8 @@ class AIProviderRegistry:
         return {
             "providers": providers,
             "routing": {
-                "primary_model": env_primary,
-                "fast_model": env_fast,
-                "briefing_model": "auto",
+                "chat_model": env_chat,
+                "decision_model": env_decision,
                 "enable_web_search": True,
                 "auto_agent_logging": True,
                 "searxng_url": settings.searxng_url or "",
@@ -204,7 +231,7 @@ class AIProviderRegistry:
                     env_url = os.environ.get("OLLAMA_BASE_URL", "").strip()
                     if env_url:
                         p["base_url"] = env_url.rstrip("/")
-            routing = {**default["routing"], **(raw.get("routing") or {})}
+            routing = self._migrate_routing(default["routing"], raw.get("routing") or {})
             caps = raw.get("capabilities_cache") or {}
             if isinstance(caps, dict):
                 self._model_caps.update(caps)
@@ -216,6 +243,26 @@ class AIProviderRegistry:
         except Exception as exc:
             logger.warning("Failed reading %s: %s", self.path, exc)
             return default
+
+    @staticmethod
+    def _migrate_routing(default: Dict[str, Any], saved: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Merge saved routing over defaults, upgrading the pre-0.13 shape
+        (`primary_model` / `fast_model` / `briefing_model`) to `chat_model`.
+        A model the user picked in the UI still wins over the env default.
+        """
+        saved = dict(saved or {})
+        legacy = [saved.pop(k, None) for k in ("primary_model", "fast_model", "briefing_model")]
+        out = {**default, **saved}
+        if "chat_model" not in saved:
+            picked = next((str(v).strip() for v in legacy if v and str(v).strip().lower() != "auto"), "")
+            if picked and not is_decision_model(picked):
+                out["chat_model"] = picked
+        if is_decision_model(str(out.get("chat_model") or "")):
+            out["chat_model"] = "auto"
+        out["chat_model"] = _clean_role_value(out.get("chat_model"))
+        out["decision_model"] = _clean_role_value(out.get("decision_model"))
+        return out
 
     def save_state(self, state: Dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -236,6 +283,13 @@ class AIProviderRegistry:
             cp["has_api_key"] = bool(raw_key)
             cp["api_key_masked"] = _mask_key(raw_key)
             cp["health"] = self._provider_health.get(cp["id"], {"reachable": None})
+            cp["reachable"] = bool(cp["health"].get("reachable"))
+            mine = [d for d in self._discovery_cache if d.get("provider_id") == cp["id"]]
+            # Chat-capable models only; decision models are listed separately so the
+            # UI can offer them in the Decision picker and never in the Chat picker.
+            cp["discovered_models"] = [d["model"] for d in mine if d.get("kind") != "decision"]
+            cp["decision_models"] = [d["model"] for d in mine if d.get("kind") == "decision"]
+            cp["configured_models"] = list(cp.get("models") or [])
             masked_providers.append(cp)
         return {
             "providers": masked_providers,
@@ -313,11 +367,49 @@ class AIProviderRegistry:
 
     def update_routing(self, patch: Dict[str, Any]) -> Dict[str, Any]:
         state = self.load_state()
-        for k in ("primary_model", "fast_model", "briefing_model", "enable_web_search", "auto_agent_logging", "searxng_url"):
+        patch = dict(patch or {})
+        # Old clients may still send primary_model; treat it as the chat model.
+        if patch.get("chat_model") is None and patch.get("primary_model") is not None:
+            patch["chat_model"] = patch["primary_model"]
+        for k in ("chat_model", "decision_model", "enable_web_search", "auto_agent_logging", "searxng_url"):
             if k in patch and patch[k] is not None:
                 state["routing"][k] = patch[k]
+        if is_decision_model(str(state["routing"].get("chat_model") or "")):
+            raise ValueError("A decision model can't be used as the chat model (it doesn't generate text).")
+        state["routing"]["chat_model"] = _clean_role_value(state["routing"].get("chat_model"))
+        state["routing"]["decision_model"] = _clean_role_value(state["routing"].get("decision_model"))
         self.save_state(state)
         return state["routing"]
+
+    def decision_model_preference(self) -> str:
+        """Routing override (UI) > DECISION_MODEL env > 'auto'."""
+        try:
+            val = str(self.load_state()["routing"].get("decision_model") or "").strip()
+        except Exception:
+            val = ""
+        if val and val.lower() != "auto":
+            return val.split("::", 1)[-1]
+        env = (settings.decision_model or "").strip()
+        return env if env and env.lower() != "auto" else "auto"
+
+    def discovered_decision_models(self, base_url: Optional[str] = None) -> List[str]:
+        """Decision models seen in the last discovery, optionally only on one server."""
+        want = (base_url or "").rstrip("/")
+        return [
+            d["model"]
+            for d in self._discovery_cache
+            if d.get("kind") == "decision" and (not want or (d.get("base_url") or "").rstrip("/") == want)
+        ]
+
+    def default_ollama_base(self) -> str:
+        """Base URL of the built-in Ollama provider (UI-editable), else OLLAMA_BASE_URL."""
+        try:
+            for p in self.load_state()["providers"]:
+                if p.get("id") == "ollama-default" and p.get("base_url"):
+                    return str(p["base_url"]).rstrip("/")
+        except Exception:
+            pass
+        return (settings.ollama_base_url or "http://localhost:11434").rstrip("/")
 
     def register_model_ping(
         self,
@@ -494,6 +586,7 @@ class AIProviderRegistry:
                                 "loaded_in_ram": mname in running_in_ram,
                                 "size_rank": _estimate_param_rank(mname),
                                 "supports_thinking": self.model_supports_thinking(mname),
+                                "kind": "decision" if is_decision_model(mname) else "chat",
                             }
                         )
 
@@ -507,28 +600,29 @@ class AIProviderRegistry:
 
     async def resolve_target(
         self,
-        role: str = "primary",
+        role: str = "chat",
         explicit_model: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Resolve `{provider, model, composite_id}` for `primary` | `fast` | `briefing`.
-        Accepts ALL dynamically discovered Ollama models (`gemma4:e2b`, `qwen3.5:0.8b`, `qwen3.5:2b`, etc.)
-        and Cloud API models without requiring any hardcoded model name.
+        Resolve `{provider, model, composite_id}` for the chat model.
+
+        Node runs two models: a **chat** model (generative: chat, tools, briefings,
+        JSON extraction) and a **decision** model (`decision_gate`, System One).
+        This resolves the chat model only. `role` accepts the legacy names
+        `primary` / `fast` / `briefing` as aliases. Decision models are never
+        returned here (they can't generate text).
         """
-        discovered = await self.discover_all_models(force=False)
+        if (role or "chat") not in CHAT_ROLE_ALIASES:
+            logger.debug("resolve_target: unknown role %r treated as chat", role)
+        discovered = [d for d in await self.discover_all_models(force=False) if d.get("kind") != "decision"]
         state = self.load_state()
         routing = state["routing"]
 
         desired = (explicit_model or "").strip()
         if not desired or desired.lower() == "auto":
-            if role == "fast":
-                desired = (routing.get("fast_model") or "auto").strip()
-            elif role == "briefing":
-                desired = (routing.get("briefing_model") or "auto").strip()
-                if desired.lower() == "auto":
-                    desired = (routing.get("primary_model") or "auto").strip()
-            else:
-                desired = (routing.get("primary_model") or "auto").strip()
+            desired = (routing.get("chat_model") or "auto").strip()
+        if desired and is_decision_model(desired):
+            desired = "auto"
 
         def _attach_secret(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             prov = self._get_provider_with_secret(entry["provider_id"])
@@ -576,18 +670,7 @@ class AIProviderRegistry:
         if not discovered:
             return None
 
-        if role == "fast":
-            # Prefer hot-in-RAM small models (`0.8b`, `e2b`, `2b`, `mini`, `flash`, `haiku`, `instant`)
-            ranked = sorted(
-                discovered,
-                key=lambda d: (
-                    0 if d.get("loaded_in_ram") else 1,
-                    d.get("size_rank", 4.0),
-                ),
-            )
-            return _attach_secret(ranked[0])
-
-        # Primary / Briefing: prefer hot-in-RAM capable models, then higher capability rank
+        # Prefer a chat model already loaded in RAM, then the most capable one.
         ranked = sorted(
             discovered,
             key=lambda d: (
@@ -604,7 +687,7 @@ class AIProviderRegistry:
         self,
         *,
         messages: List[Dict[str, Any]],
-        role: str = "primary",
+        role: str = "chat",
         explicit_model: Optional[str] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         enable_thinking: bool = False,

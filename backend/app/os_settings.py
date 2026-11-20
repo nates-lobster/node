@@ -244,7 +244,7 @@ SETTINGS_SCHEMA: List[Dict[str, Any]] = [
         "type": "string",
         "allow_empty": False,
         "default": "Urgent, School, Work, Personal, Finance, Updates, Promo",
-        "description": "Global categories used by Von (/v1/systemone) and fast fallback AI to auto-sort Inbox notifications.",
+        "description": "Global categories the decision model (falling back to the chat model) uses to auto-sort Inbox notifications.",
     },
     {
         "key": "kb_start_menu",

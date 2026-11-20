@@ -1,4 +1,4 @@
-# Node (v0.12.0)
+# Node (v0.13.0)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -25,6 +25,22 @@ docker compose up -d --build         # http://<server>:8080
 writes lives in `data/` (SQLite DB, uploads, browser sessions, credentials). It is
 gitignored and host-mounted, so `git pull` updates the code and never touches your
 data.
+
+---
+
+## What's New in v0.13.0
+
+**Two models, one Ollama.** See [`CHANGELOG.md`](CHANGELOG.md).
+
+- **Decision model + Chat model** replace "model vs fast model". The decision
+  model (LFM3 **d1**, `ollama pull d1`) tags the Inbox, sets priority and
+  routes tools in one forward pass. The chat model does everything that
+  writes text. Both are picked in **Settings → AI Models**.
+- **Von is removed.** The decision model runs on the same Ollama server, so no
+  extra container is needed.
+- **Graceful on Ollama/llama.cpp:** where the runtime can't do multi-select or
+  typed answers, Node asks one yes/no per tag instead of failing.
+- **Auto-sort respects your corrections,** and CI now runs the tests on every PR.
 
 ---
 
@@ -76,7 +92,7 @@ pass, plus a maintainer handoff:
 Full write-up: [`docs/V10_2_STRUCTURAL_PASS.md`](docs/V10_2_STRUCTURAL_PASS.md)
 
 ### 1. LFM3 decision gate replaces the placeholder classifier
-Every notification and chat turn runs through **Liquid AI d1-2B** (`d1.2` hosted / `LiquidAI/d1-2B` local, TypeSafe System One protocol). It answers typed questions in **one forward pass with calibrated confidence**, so classification costs no generation. It decides **tags first** (filters are tag-based, not category-based) and, for chat, attaches **only the tool families a turn needs** — ~6 tools instead of 36 — with dedicated slot questions so `"band practice on friday"` becomes `Band Practice` on the right date, not the whole sentence as a title. Offline, Node falls back to the smallest fast model and then to deterministic heuristics.
+Every notification and chat turn runs through **Liquid AI d1-2B** (`d1.2` hosted / `LiquidAI/d1-2B` local, TypeSafe System One protocol). It answers typed questions in **one forward pass with calibrated confidence**, so classification costs no generation. It decides **tags first** (filters are tag-based, not category-based) and, for chat, attaches **only the tool families a turn needs** — ~6 tools instead of 36 — with dedicated slot questions so `"band practice on friday"` becomes `Band Practice` on the right date, not the whole sentence as a title. Offline, Node falls back to the chat model and then to deterministic heuristics.
 
 ### 2. Inbox rebuilt as a real mail client
 Tag registry with editable descriptions (the description *is* the classifier criteria), rename that can never strand two tags, click-to-read with a full reading pane, on-demand body harvest from the live tab so you can drop the mail client entirely, duplicate merging across mismatched senders/services, a proper conversation list, user filters with an important-first default, and a **Gmail-style query language** (`is:unread`, `from:`, `tag:school OR tag:work`, `newer_than:7d`, `-tag:promo`) shared by the UI and the AI. Every correction is recorded and exportable as NDJSON for local fine-tuning.
@@ -109,7 +125,7 @@ User tag corrections are now authoritative and can no longer be overwritten by a
 - **PowerSchool Full-Course & XTE Assignment Sync:** Expands `colspan` cells on `table#tblgrades`, traverses `/guardian/scores.html` + `POST /ws/xte/assignment/lookup`, preserves cached SQLite grades across OIDC `max_age=600` re-auth walls, and bridges missing/upcoming LMS assignments directly into **Tasks**.
 
 ### 3. Detached Server-Side AI Queue, Multi-Provider Models, Shared Agent Logs & Web Search
-- **Dynamic Local/Remote Ollama + Cloud API Providers:** Configure local Ollama, remote LAN/Tailscale Ollama servers, OpenAI-compatible endpoints (OpenAI, OpenRouter, Groq, Together, vLLM), Anthropic, Google Gemini, and optional `Von` (`/v1/systemone`). Remote Ollama workers can also self-register via `POST /api/v1/models/ping`. Every model exposed by Ollama (`qwen3.5:2b`, `qwen3.5:0.8b`, `gemma4:e2b`, Llama, Mistral, DeepSeek, etc.) is discovered dynamically with automatic thinking/tool-capability fallback (`OLLAMA_MODEL=auto`).
+- **Dynamic Local/Remote Ollama + Cloud API Providers:** Configure local Ollama, remote LAN/Tailscale Ollama servers, OpenAI-compatible endpoints (OpenAI, OpenRouter, Groq, Together, vLLM), Anthropic, and Google Gemini. The decision model (`d1`) is served by the same Ollama over `/v1/systemone`. Remote Ollama workers can also self-register via `POST /api/v1/models/ping`. Every model exposed by Ollama (`qwen3.5:2b`, `qwen3.5:0.8b`, `gemma4:e2b`, Llama, Mistral, DeepSeek, etc.) is discovered dynamically with automatic thinking/tool-capability fallback (`OLLAMA_MODEL=auto`).
 - **100% Server-Side AI Execution Queue (`AIJob`):** Every prompt runs inside a detached server-side `asyncio.Task` persisted to SQLite (`POST /api/v1/ai/jobs/chat` + live reconnectable `GET /api/v1/ai/jobs/{job_uid}/stream`). Fire off multiple prompts across contexts, close or reload your browser tab mid-generation with **zero network errors**, and return anytime to completed responses and executed OS actions.
 - **Shared Multi-Agent Workspace Logbook:** AI instances share persistent read/write/edit/append memory (`agent_logs` SQLite table + `/data/ai_shared_log.md`) so reasoning models, fast triage models, and 24/7 Cron passes actively leave discoveries, user preferences, and operational notes for one another.
 - **Web Search + Exact Weekday/Date Grounding:** Built-in `web_search` + `fetch_webpage` tools plus server-side 14-day calendar lookup (`verify_and_fix_weekday_date`) that eliminates off-by-one weekday scheduling mistakes.
@@ -157,13 +173,10 @@ NODE_AUTH_PASSWORD=your-strong-server-password
 
 ```bash
 cp -n .env.example .env
-# Pull whichever local Ollama models you prefer — Node discovers all installed models automatically:
-ollama pull qwen3.5:2b
-ollama pull qwen3.5:0.8b
+# On the Ollama box: the decision model plus any chat model (Node discovers both):
+ollama pull d1
+ollama pull qwen3.5:2b  # any chat model; Node lists everything Ollama has
 docker compose up -d --build
-
-# Optional: also launch the local Von (/v1/systemone) OpenVINO CPU classifier container:
-# VON_BASE_URL=http://von:8000 docker compose --profile von up -d --build
 ```
 
 ### Remote Ollama Worker Ping (Optional)

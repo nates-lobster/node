@@ -5,6 +5,60 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.13.0 — 2026-11-19
+
+Two AI models instead of "model vs fast model", and Von is gone.
+
+### Manual steps
+- **Pull the decision model on your Ollama box:** `ollama pull d1`. Node finds
+  it automatically on the same `OLLAMA_BASE_URL` (`/v1/systemone`), so no new
+  server or container is needed. Optional: `OLLAMA_KEEP_ALIVE=-1` on the Ollama
+  server keeps both models loaded.
+- **If you used Von:** delete `VON_BASE_URL` / `VON_API_KEY` from `.env` and
+  stop the old container (`docker rm -f hub-von`). The `von` compose profile no
+  longer exists.
+- Optional: set `CHAT_MODEL` in `.env`. `OLLAMA_MODEL` / `OLLAMA_FAST_MODEL`
+  still work as fallbacks, and saved Settings routing migrates on its own.
+
+### Changed
+- **AI roles are now Decision model + Chat model** (Settings → AI Models). The
+  decision model (LFM3 d1) tags the Inbox, picks priority and routes tools; the
+  chat model handles chat, tools, briefings and every other generation. The old
+  Primary / Fast / Briefing pickers merge into the chat model.
+- **One Ollama for both.** The decision model defaults to the Ollama server's
+  `/v1/systemone` endpoint; `DECISION_BASE_URL` is only needed for a separate
+  System One server. With routing on *auto*, Node picks the d1 tag Ollama has
+  installed.
+- **Decision models never get picked as the chat model,** even if they're the
+  only model loaded in RAM. Choosing one as the chat model is rejected.
+- **Auto chat-model choice** prefers models already loaded in RAM, then the
+  smallest, so the first reply doesn't wait on a cold load.
+- **Inbox fallback chain** is now decision model → chat model → rules. The
+  categories card shows which one is active.
+- `DECISION_TIMEOUT_SECONDS` default raised from 6 to 12 to cover Ollama
+  cold-loading d1.
+
+### Fixed
+- **Works on Ollama / llama.cpp, not only Transformers.** Node probes what the
+  server's System One answers. Where multi-select isn't available, tagging and
+  tool routing ask one yes/no question per tag or tool family instead of
+  failing, and skip the text/date reads.
+- **Auto-sort no longer overwrites tags you corrected by hand**
+  (`tag_corrected_by_user` is authoritative).
+- Online status dots in Settings were invisible (the green class wasn't in the
+  prebuilt CSS).
+
+### Removed
+- Von: `VON_*` settings, its probes and status fields, the `von` compose
+  profile, and the `primary_chat` / `fast_router` / `von_router` keys in
+  `/api/v1/models/status` (now `chat_model` / `decision_model`).
+
+### Developer
+- GitHub Actions runs the test suite on Python 3.12 for every PR and push to
+  `main`.
+
+---
+
 ## 0.12.0 — 2026-11-19
 
 Security and maintenance. First release managed by the maintainer agent through

@@ -779,7 +779,7 @@ async def test_ollama_inference() -> Dict[str, Any]:
         return {
             "ok": False,
             "reachable": False,
-            "model": settings.ollama_model,
+            "model": ollama_client.model or settings.effective_chat_model,
             "base_url": settings.ollama_base_url,
             "message": status_info.detail,
         }
@@ -791,7 +791,7 @@ async def test_ollama_inference() -> Dict[str, Any]:
     return {
         "ok": bool(reply),
         "reachable": True,
-        "model": settings.ollama_model,
+        "model": ollama_client.model or settings.effective_chat_model,
         "base_url": settings.ollama_base_url,
         "sample_output": reply or "Model reachable, but empty output returned.",
     }
@@ -1759,7 +1759,7 @@ async def generate_briefing(
 
     record = AIBriefing(
         markdown=content_md,
-        model=settings.ollama_model,
+        model=ollama_client.model or settings.effective_chat_model,
         source=engine_used,
         unread_count=len(unread_notifs),
         active_tasks_count=len(pending_tasks),
@@ -2742,7 +2742,13 @@ async def remove_ai_provider(provider_id: str) -> Dict[str, Any]:
 
 @app.patch("/api/v1/models/routing")
 async def update_ai_role_routing(payload: AIRoleRoutingRequest) -> Dict[str, Any]:
-    routing = ai_provider_registry.update_routing(payload.model_dump(exclude_none=True))
+    try:
+        routing = ai_provider_registry.update_routing(payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from .decision_gate import decision_gate
+
+    decision_gate.invalidate()
     status_data = await model_router.refresh_status(force=True)
     return {"routing": routing, "status": status_data}
 
@@ -3016,7 +3022,7 @@ def get_extensions_sdk_docs() -> Dict[str, Any]:
 
 
 # ===========================================================================
-# v10.1 Upgrades: Inbox Custom Categories + Von-First Auto-Sort, Unified AI
+# v10.1 Upgrades: Inbox Custom Categories + Decision-Model Auto-Sort, Unified AI
 # Instructions + Chat Feedback Self-Improvement, & Shared Workspace Drive
 # ===========================================================================
 
@@ -3035,18 +3041,27 @@ async def get_inbox_categories_config(app_slug: Optional[str] = None) -> Dict[st
                     seen.add(c.lower())
                     merged_cats.append(c)
 
-    fast_id = await model_router.pick_fast_ollama_model()
-    von_ready = bool(model_router.von_base and model_router._von_online)
+    from .decision_gate import decision_gate
+
+    chat_id = await model_router.pick_chat_model()
+    gate = await decision_gate.status()
+    chat_label = chat_id.split("::")[-1] if chat_id else ""
+    if gate.get("online"):
+        label = f"Decision model ({gate.get('model') or 'd1'})"
+    elif chat_label:
+        label = f"Chat model ({chat_label})"
+    else:
+        label = "Smart rules (no model online)"
     return {
         "global_categories": global_cats,
         "per_app_categories": per_app,
         "all_categories": merged_cats,
         "autosort_engine": {
-            "primary": "von",
-            "von_configured": bool(model_router.von_base),
-            "von_online": von_ready,
-            "fallback_fast_model": fast_id or "auto",
-            "active_label": "Von (/v1/systemone)" if von_ready else (f"Fast AI ({fast_id.split('::')[-1]})" if fast_id else "Fast AI / Smart Rules"),
+            "primary": "decision",
+            "decision_online": bool(gate.get("online")),
+            "decision_model": gate.get("model") or "",
+            "chat_model": chat_label or "auto",
+            "active_label": label,
         },
     }
 
@@ -3101,9 +3116,10 @@ async def autosort_inbox_notifications(
     session: Session = Depends(get_session),
 ) -> Dict[str, Any]:
     """
-    Re-categorize active Inbox notifications using Von (`/v1/systemone`) FIRST,
-    automatically falling back to the fastest/smallest available model (`role='fast'`),
-    and honoring all global + per-app custom Inbox categories!
+    Re-categorize active Inbox notifications with the decision model first,
+    falling back to the chat model, then deterministic rules, honoring all
+    global + per-app custom Inbox categories. Items whose tags the user
+    corrected keep their category (`tag_corrected_by_user` is authoritative).
     """
     stmt = select(Notification).where(Notification.status == "active").order_by(Notification.id.desc()).limit(limit)
     rows = list(session.exec(stmt).all())
@@ -3115,7 +3131,10 @@ async def autosort_inbox_notifications(
     for n in rows:
         if n.indicator_type == "ping_only":
             continue
-        res = await model_router.categorize_item_von_first(
+        if n.tag_corrected_by_user:
+            engines_used["user"] = engines_used.get("user", 0) + 1
+            continue
+        res = await model_router.categorize_item(
             source_app=n.source_app,
             title=n.title,
             snippet=n.ai_summary or n.message or "",

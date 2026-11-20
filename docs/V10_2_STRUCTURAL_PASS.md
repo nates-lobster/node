@@ -9,8 +9,8 @@ browser-window scraping with learned HTTP APIs.
 ## 1. The decision gate (LFM3 / d1-2B)
 
 Every notification and every chat turn passes through a **typed decision model**
-before anything else happens. It replaces the `Von`-like placeholder as the
-primary classifier and router.
+before anything else happens. It replaced the earlier placeholder classifier
+(removed entirely in 0.13.0) as the primary classifier and router.
 
 **Why a decision model and not a chat model.** d1-2B answers a set of typed
 questions — choice, multi-choice, score, text, date, number — in a **single

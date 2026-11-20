@@ -10,7 +10,7 @@ DEFAULT_DATA_DIR = BASE_ROOT / "data"
 
 class Settings(BaseSettings):
     app_name: str = "Node"
-    app_version: str = "0.12.0"
+    app_version: str = "0.13.0"
     environment: str = "production"
     local_timezone: str = Field(
         default="America/New_York",
@@ -78,10 +78,16 @@ class Settings(BaseSettings):
     browser_executable_path: str = ""  # Optional custom binary; auto-prefers /usr/bin/brave-browser
     scraper_state_path: str = str(DEFAULT_DATA_DIR / "scraper_state" / "scraper_state.json")
 
-    # Default Local / Remote Ollama Endpoint (additional Ollama & Cloud APIs live in ai_providers.json)
+    # Default Local / Remote Ollama Endpoint (additional Ollama & Cloud APIs live in ai_providers.json).
+    # One Ollama serves BOTH models Node uses, picked by name per request:
+    #   * the chat model     -> /api/chat        (CHAT_MODEL, e.g. an LFM3 chat tag)
+    #   * the decision model -> /v1/systemone    (DECISION_MODEL, e.g. `d1`)
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "auto"
-    ollama_fast_model: str = "auto"
+    chat_model: str = Field(default="", validation_alias=AliasChoices("CHAT_MODEL"))
+    # Deprecated (pre-0.13 names). Still read so existing .env files keep working;
+    # CHAT_MODEL wins when set. See `effective_chat_model`.
+    ollama_model: str = ""
+    ollama_fast_model: str = ""
     ollama_timeout_seconds: float = 180.0
     ollama_num_ctx: int = 4096
     ollama_num_threads: int = 4
@@ -91,16 +97,10 @@ class Settings(BaseSettings):
     # Optional Web Search endpoint (e.g., local SearXNG JSON URL; defaults to built-in DuckDuckGo/Wiki search)
     searxng_url: str = ""
 
-    # Optional System One Decision Engine (Von / TypeSafe /v1/systemone wire protocol)
-    von_base_url: str = ""
-    von_api_key: str = ""
-    von_model: str = "von-1.3.7"
-    von_confidence_threshold: float = 0.80
-
-    # v10.2 Primary Decision Gate: LFM3 d1 (LiquidAI) or any TypeSafe System One server.
-    # Every notification/tag decision and every chat tool-plan goes through this gate first.
-    # Set DECISION_BASE_URL to e.g. http://localhost:8010 (llama.cpp / vLLM / LM Studio / Von)
-    # or https://api.liquid.ai/decisions with DECISION_API_KEY. Empty = auto-detect -> Von -> LLM.
+    # Decision model: LFM3 d1 (LiquidAI) over the TypeSafe System One wire protocol.
+    # Every notification/tag decision and every chat tool-plan goes through it first.
+    # Empty DECISION_BASE_URL = use the Ollama server above (Ollama serves d1 at /v1/systemone).
+    # Override for llama.cpp (`llama serve`), or https://api.liquid.ai/decisions + DECISION_API_KEY.
     decision_base_url: str = Field(
         default="",
         validation_alias=AliasChoices("DECISION_BASE_URL", "LFM3_BASE_URL", "SYSTEM_ONE_BASE_URL"),
@@ -117,8 +117,9 @@ class Settings(BaseSettings):
         default=0.55,
         validation_alias=AliasChoices("DECISION_CONFIDENCE_THRESHOLD", "LFM3_CONFIDENCE_THRESHOLD"),
     )
+    # Generous enough to survive Ollama cold-loading d1 on the first call.
     decision_timeout_seconds: float = Field(
-        default=6.0,
+        default=12.0,
         validation_alias=AliasChoices("DECISION_TIMEOUT_SECONDS", "LFM3_TIMEOUT_SECONDS"),
     )
     decision_max_parallel: int = 4
@@ -152,6 +153,15 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def effective_chat_model(self) -> str:
+        """CHAT_MODEL, else the deprecated OLLAMA_MODEL / OLLAMA_FAST_MODEL, else 'auto'."""
+        for raw in (self.chat_model, self.ollama_model, self.ollama_fast_model):
+            val = (raw or "").strip()
+            if val and val.lower() != "auto":
+                return val
+        return "auto"
 
 
 settings = Settings()

@@ -266,9 +266,8 @@ document.addEventListener("alpine:init", () => {
     startMenuQuery: "",
     startMenuSelectedIdx: 0,
     modelsStatus: {
-      primary_chat: { model: "qwen3.5:2b", ready: false },
-      fast_router: { model: "qwen3.5:0.8b", ready: false, active_model: "qwen3.5:2b" },
-      von_router: { configured: false, reachable: false, model: "von-1.3.7" },
+      chat_model: { configured: "auto", effective: "", ready: false },
+      decision_model: { configured: "auto", effective: "", online: false, capabilities: {} },
     },
     inboxAiProcessing: false,
 
@@ -465,7 +464,7 @@ document.addEventListener("alpine:init", () => {
 
     // Multi-Provider AI & Server-Side Job Queue
     selectedChatModel: "auto",
-    aiProvidersState: { providers: [], routing: { primary_model: "auto", fast_model: "auto", searxng_url: "" } },
+    aiProvidersState: { providers: [], routing: { chat_model: "auto", decision_model: "auto", searxng_url: "" } },
     serverAiJobs: [],
     attachedJobStreams: {},
     providerFormOpen: false,
@@ -538,14 +537,14 @@ document.addEventListener("alpine:init", () => {
     decisionGateTesting: false,
     decisionGateResult: null,
 
-    // Inbox Sort, Custom Categories & Von-First Auto-Sorter
+    // Inbox Sort, Custom Categories & Decision-Model Auto-Sorter
     inboxSortBy: "priority", // priority | newest | oldest | category | app | title
     selectedCategoryFilter: "All",
     inboxCategoriesState: {
       global_categories: ["Urgent", "School", "Work", "Personal", "Finance", "Updates", "Promo"],
       per_app_categories: {},
       all_categories: ["Urgent", "School", "Work", "Personal", "Finance", "Updates", "Promo"],
-      autosort_engine: { primary: "von", von_online: false, active_label: "Fast AI" },
+      autosort_engine: { primary: "decision", decision_online: false, active_label: "Chat model" },
     },
     showInboxCategoryManager: false,
     newInboxCategoryInput: "",
@@ -5871,6 +5870,23 @@ document.addEventListener("alpine:init", () => {
       return out;
     },
 
+    get allAvailableDecisionModels() {
+      const out = [{ id: "auto", label: "Auto (d1 on your Ollama)" }];
+      const seen = new Set(["auto"]);
+      for (const p of this.aiProvidersState?.providers || []) {
+        if (!p.enabled) continue;
+        for (const m of p.decision_models || []) {
+          const mid = String(m || "").trim();
+          if (!mid || seen.has(mid)) continue;
+          seen.add(mid);
+          out.push({ id: mid, label: `${mid} (${p.name})` });
+        }
+      }
+      const cur = String(this.aiProvidersState?.routing?.decision_model || "").trim();
+      if (cur && !seen.has(cur)) out.push({ id: cur, label: `${cur} (not seen yet)` });
+      return out;
+    },
+
     async loadAiProviders(forceRefresh = false) {
       try {
         const res = await this.apiFetch(`/api/v1/models/providers?refresh=${forceRefresh ? "true" : "false"}`);
@@ -5972,8 +5988,8 @@ document.addEventListener("alpine:init", () => {
         const res = await this.apiFetch("/api/v1/models/routing", {
           method: "PATCH",
           body: JSON.stringify({
-            primary_model: r.primary_model || "auto",
-            fast_model: r.fast_model || "auto",
+            chat_model: r.chat_model || "auto",
+            decision_model: r.decision_model || "auto",
             searxng_url: r.searxng_url || "",
           }),
         });
@@ -5981,7 +5997,8 @@ document.addEventListener("alpine:init", () => {
           this.aiProvidersState.routing = res.routing;
         }
         await this.refreshCoreData(true);
-        this.notify("Updated AI model routing");
+        await this.loadDecisionGateStatus(true);
+        this.notify("Updated AI models");
       } catch (err) {
         this.notify(err.message, "error");
       }
@@ -6501,7 +6518,7 @@ document.addEventListener("alpine:init", () => {
     },
 
     // =========================================================================
-    // v10.1: Inbox Custom Categories + Von-First Auto-Sorter
+    // v10.1: Inbox Custom Categories + Decision-Model Auto-Sorter
     // =========================================================================
     async loadInboxCategories() {
       try {
@@ -6665,9 +6682,9 @@ document.addEventListener("alpine:init", () => {
       this.scheduleSettingsSync({ [key]: value });
     },
 
-    async loadDecisionGateStatus() {
+    async loadDecisionGateStatus(force = false) {
       try {
-        this.decisionGateStatus = await this.apiFetch("/api/v1/decision-gate/status");
+        this.decisionGateStatus = await this.apiFetch(`/api/v1/decision-gate/status${force ? "?force=true" : ""}`);
       } catch (_e) {}
     },
 

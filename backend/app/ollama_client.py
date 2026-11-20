@@ -247,14 +247,14 @@ class OllamaClient:
         timeout_seconds: Optional[float] = None,
     ) -> None:
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
-        self.model = model or settings.ollama_model
+        self.model = model or settings.effective_chat_model
         self.timeout_seconds = timeout_seconds or settings.ollama_timeout_seconds
 
     async def check_status(self) -> OllamaStatusInfo:
         from .ai_providers import ai_provider_registry
 
         discovered = await ai_provider_registry.discover_all_models(force=False)
-        target = await ai_provider_registry.resolve_target(role="primary")
+        target = await ai_provider_registry.resolve_target(role="chat")
         available = [d["model"] for d in discovered]
 
         if target:
@@ -302,7 +302,7 @@ class OllamaClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                role="briefing" if not model_override else "primary",
+                role="chat",
                 explicit_model=model_override,
                 enable_thinking=bool(use_think),
                 temperature=temp,
@@ -321,7 +321,7 @@ class OllamaClient:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    role="primary",
+                    role="chat",
                     explicit_model=model_override,
                     enable_thinking=False,
                     temperature=0.50,
@@ -459,7 +459,7 @@ class OllamaClient:
         """
         from .ai_providers import ai_provider_registry
 
-        target = await ai_provider_registry.resolve_target(role="primary", explicit_model=model_override)
+        target = await ai_provider_registry.resolve_target(role="chat", explicit_model=model_override)
         if not target:
             yield {"type": "unreachable"}
             return

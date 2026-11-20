@@ -1559,7 +1559,7 @@ class ServerBrowserStreamManager:
     ) -> int:
         """
         Immediately refine newly arrived (or unprocessed cron) notifications through
-        Von (`/v1/systemone`) + Fast Ollama (`qwen3.5:0.8b` / `2b` `think=False`):
+        Decision model (`/v1/systemone`) with chat-model fallback (`think=False`):
         cleans accessibility artifacts, removes redundant app prefixes, writes 1-line
         previews, and assigns `category`, `is_important`, and `priority`.
         """
@@ -1624,7 +1624,7 @@ class ServerBrowserStreamManager:
                     n.tag_confidence = float(res.get("confidence") or 0.0)
                     n.tag_engine = str(res.get("engine") or "")[:40]
                     if n.user_importance_override is None:
-                        # Blend learned sender/keyword override with Von/AI decision
+                        # Blend learned sender/keyword override with the AI decision
                         learned_imp, learned_score, learned_reason = importance_service.classify(
                             n.source_app, n.title, n.message, n.indicator_type
                         )

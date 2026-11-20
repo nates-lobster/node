@@ -372,7 +372,7 @@ class FocusGuardService:
                             baseline["recommended_mode"] = parsed["recommended_mode"]
                     if parsed.get("summary"):
                         baseline["summary"] = str(parsed["summary"]).strip()[:260]
-                    baseline["analyzed_by"] = settings.ollama_model
+                    baseline["analyzed_by"] = settings.effective_chat_model
         except Exception as exc:
             logger.debug("Background video AI analysis fallback: %s", exc)
 
