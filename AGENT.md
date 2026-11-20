@@ -163,6 +163,7 @@ All paths relative to repo root.
 | Inbox ingest dedupe | `backend/app/inbox_ingest.py` | `absorb_or_none` (every row-creating path must call it first), decision-model check for borderline pairs, cleanup |
 | Grades | `backend/app/grades_service.py`, `grades_control.py` | dashboards, visibility, groups |
 | Learned APIs | `backend/app/api_bridge.py` | api-anything client, cookie import |
+| API connectors | `backend/app/connectors/` | Plain-HTTP sources (Outlook mail, Teams activity/chats/Assignments). `runner.py` derives connectors from installed apps, schedules, backs off. `token_mint.py` borrows a signed request's headers from a headless page in the server profile (memory only). `ingest.py` = the row-writing rules. Design: `docs/connectors/README.md` |
 | Tasks sync | `backend/app/task_intelligence.py` | calendar+inbox → tasks |
 | Settings | `backend/app/os_settings.py` | 100+ keys, `sanitize_patch` whitelist |
 | Schema | `backend/app/models.py`, `database.py` | SQLModel tables + boot migrations |
@@ -288,6 +289,17 @@ upgraded from ≤0.11 may be in "legacy shared" mode until the user clicks
 `handle_stream_websocket` reports errors as a `{"type":"error"}` frame and then
 closes with `1011`. Before 0.12 it never closed, so clients (and a test) hung
 forever when the browser couldn't launch. Keep the close.
+
+### 7.10 Connectors: what Playwright does and doesn't see
+`BrowserContext.on("request")` reports page, iframe (even cross-origin) and
+dedicated-worker requests, but **not SharedWorker requests**. Outlook and Teams
+can move API calls into SharedWorkers (the record.py capture saw them in pages/dedicated workers), so `token_mint._SharedWorkerWatch` attaches
+over CDP (non-flattened). `test_v016_mint_*` proves it and fails without the
+watch. In a blob worker, a relative `fetch('/x')` doesn't resolve, so test
+workers need a real script URL. The mint test runs with
+`NODE_REC_CHROMIUM=/tmp/chromium` (see 7.1) and is skipped otherwise. Connector
+tokens must never be written to disk or returned by an API: `describe()` lists
+header *names* only.
 
 ---
 

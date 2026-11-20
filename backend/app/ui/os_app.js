@@ -6675,6 +6675,67 @@ document.addEventListener("alpine:init", () => {
       }
     },
 
+    // API connectors (Settings → System → Connectors)
+    connectors: { enabled: true, connectors: [] },
+    connectorBusy: "",
+
+    async loadConnectors() {
+      try {
+        this.connectors = await this.apiFetch("/api/v1/connectors");
+      } catch (err) {
+        this.notify(err.message || "Could not read connectors", "error");
+      }
+    },
+
+    connectorHealthLabel(c) {
+      return {
+        ok: "Working",
+        pending: "Waiting for first run",
+        error: "Failing — retrying",
+        sign_in_needed: "Sign-in needed",
+        disabled: "Off",
+      }[c.health] || c.health;
+    },
+
+    connectorWhen(epochSeconds) {
+      if (!epochSeconds) return "never";
+      const mins = Math.round((Date.now() / 1000 - epochSeconds) / 60);
+      if (mins < 1) return "just now";
+      if (mins < 60) return `${mins} min ago`;
+      return `${Math.round(mins / 60)} h ago`;
+    },
+
+    async runConnector(key) {
+      this.connectorBusy = key;
+      try {
+        const res = await this.apiFetch(`/api/v1/connectors/${encodeURIComponent(key)}/run`, { method: "POST" });
+        if (res.ok) {
+          const parts = [`${res.created || 0} new`];
+          if (res.refreshed) parts.push(`${res.refreshed} updated`);
+          if (res.marked_read) parts.push(`${res.marked_read} marked read`);
+          this.notify(`Synced: ${parts.join(", ")}`);
+        } else {
+          this.notify(res.error || "Sync failed", "error");
+        }
+      } catch (err) {
+        this.notify(err.message || "Sync failed", "error");
+      } finally {
+        this.connectorBusy = "";
+        this.loadConnectors();
+      }
+    },
+
+    async toggleConnector(c) {
+      try {
+        this.connectors = await this.apiFetch(`/api/v1/connectors/${encodeURIComponent(c.key)}/enabled`, {
+          method: "POST",
+          body: JSON.stringify({ enabled: !c.enabled }),
+        });
+      } catch (err) {
+        this.notify(err.message || "Could not change connector", "error");
+      }
+    },
+
     async patchOsSetting(key, value) {
       // Mirror into local state immediately so the button flips before the round trip.
       this.osSettings = { ...(this.osSettings || {}), [key]: value };

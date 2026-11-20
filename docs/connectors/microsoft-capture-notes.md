@@ -61,8 +61,65 @@ Leaning towards **A, with B as an opportunistic top-up**. This keeps the
 waits for the `record.py` capture, which should show the list/chat calls and
 each token's audience.
 
-## Still needed (next capture, with `record.py`)
+## `record.py` capture (second round)
 
-- Outlook: the inbox list (switch folder and back), open an email, scroll the
-  list.
-- Teams: open a chat, scroll up in it, switch chats, open Assignments.
+The second round used `record.py`, and it recorded the data calls. Every call
+below sends `authorization` (Bearer) and cookies. Shapes only; values were
+never recorded.
+
+### Outlook (`/owa/service.svc?action=X&app=Mail&n=N`, POST)
+
+| Action | Count | Notes |
+|---|---|---|
+| `FindConversation` | 11× | The inbox list. The request is JSON in the `x-owa-urlpostdata` header: `ParentFolderId`, `ConversationShape` (IdOnly + extras), `ShapeName`, `Paging` (`SeekToConditionPageView` on `ConversationInstanceKey`, ~50 rows), `ViewFilter`, `SortOrder`, `FocusedViewFilter`. The response `Body.Conversations[]` has `ConversationId`, `ConversationTopic`, `UniqueSenders`, `LastSender.Mailbox`, `LastDeliveryTime`, `MessageCount`, `UnreadCount`, `HasAttachments`, `ItemIds`, `Preview`, `Importance` |
+| `GetConversationItems` | 21× | Opening an email. The JSON is in the body. `ItemShape.BodyShape` = `UniqueFragment`. Response: `ConversationNodes[].Items[]` with `From`, `ToRecipients`, `Subject`, `DateTimeReceived`, `UniqueBody{BodyType,Value}`, `IsRead`, `HasAttachments` |
+| `FindItem` | 2× | Drafts: `IndexedPageView`, `RootFolder.Items[]` |
+| `GetFolderChangeDigest` | 4× | Cheap "anything new?" check: `Watermark`, `UnseenCount` |
+| also | | `GetItem`, `ApplyConversationAction` (mark read), `GetFolder`, `SubscribeToNotification`, `GetCalendarView`, `GetOwaUserConfiguration` |
+
+Headers: `action`, `x-anchormailbox`, `x-owa-sessionid`, `x-owa-hosted-ux`,
+`x-owa-correlationid`, `x-req-source: Mail`, `prefer: IdType="ImmutableId", …`,
+`ms-cv`. The only token refresh captured was for
+`titles.prod.mos.microsoft.com` (client `9199bf20-…`). OWA's own mail token
+came from cache, so its audience wasn't seen. That doesn't matter for the mint
+(below).
+
+### Teams
+
+- **Chat service** (`teams.cloud.microsoft/api/chatsvc/amer/v1/…`):
+  - `users/ME/conversations/{id}/messages?view=msnp24Equivalent|supportsMessageProperties&pageSize=200&startTime=1`.
+    The sampled conversation id has 16 characters: it's **`48:notifications`,
+    the activity feed**.
+  - Each feed message has `properties.activity` with `activityType`,
+    `sourceUserImDisplayName`, `messagePreview` and `sourceThreadTopic`, plus
+    `properties.isread`.
+  - Also seen: `users/ME/conversations/{id}` and `threads/{id}/consumptionhorizons`.
+  - **No chat-list call was captured.**
+- **Token:** `login.microsoftonline.com/{tenant}/oauth2/v2.0/token`, client
+  `5e3ce6c0-…`, scope `https://api.spaces.skype.com/.default`. It refreshed
+  24× in a few minutes.
+- **Assignments** (`assignments.edu.cloud.microsoft/api/v1.0/edu/…`, from the
+  app's frame):
+  - `me/work?$filter=…&$orderby=dueDateTime desc&$expand=submissions(...)`;
+  - `classes/{id}/assignments/{id}` (`displayName`, `dueDateTime`, `status`,
+    `instructions`, `grading.maxPoints`, `webUrl`);
+  - `…/submissions` (`status`, `submittedDateTime`, `outcomes`);
+  - `classes/{id}/members`.
+  - Headers: `prefer: AssignmentStatusV2`, `x-aui-*`, `ms-int-appid`.
+
+## Decision: option A (on-demand mint)
+
+Built in 0.16.0 (`backend/app/connectors/`, design in [README.md](README.md)).
+The mint copies the headers of the first matching request instead of asking
+MSAL for a token. Unknown audiences don't matter: whatever the app itself sent
+is what we replay. SharedWorker requests are watched over CDP, like
+`record.py` does.
+
+## Still open
+
+- A Teams chat-list call. `teams-chats` uses the chat service's standard list
+  endpoint and is marked experimental.
+- Outlook write-back (mark read in Outlook when read in Node), using
+  `ApplyConversationAction`.
+- Option B (the extension forwards headers) as a top-up source:
+  `token_mint.put_external` is ready for it.
