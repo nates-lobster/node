@@ -5,6 +5,50 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.16.0 — 2026-11-20
+
+The first API connectors, built from the user's `record.py` captures.
+
+### Added
+- **API connectors** (`backend/app/connectors/`). Each source is fetched over
+  plain HTTP on a schedule, with health tracking, backoff and a cursor plus
+  seen-ids per connector in `data/connectors.json` (no secrets). Connectors
+  appear on their own for installed apps:
+  - **Outlook mail:** inbox conversations through OWA's `FindConversation`,
+    and bodies of new unread mail through `GetConversationItems`.
+  - **Teams activity feed:** mentions, replies, assignment posts … Reactions
+    are skipped.
+  - **Teams chats** *(experimental)*: an unread last message in a chat
+    becomes a row.
+  - **Teams Assignments:** unsubmitted work goes to **Tasks** with its due
+    date; new assignments go to the Inbox (high priority when due within 24 h).
+- **Token mint.** Outlook/Teams use short-lived bearer tokens. The server
+  opens the app headless in its own profile, copies the headers of the first
+  signed API request, and closes the page.
+  - Page, frame, dedicated-worker and SharedWorker requests all count.
+  - Tokens stay in memory until shortly before they expire. On a 401 they're
+    re-minted once.
+- **Inbox behaviour for connector rows:**
+  - a new reply updates the conversation's existing row instead of adding one;
+  - mail read in Outlook/Teams turns read in Node;
+  - the first sync skips read mail older than 3 days;
+  - items that already came in through a tab or the extension are merged.
+- Settings → System → **Connectors**: health, last error, **Sync now**, on/off.
+- API: `GET /api/v1/connectors`, `POST /api/v1/connectors/{key}/run|enabled|mint`
+  (session only).
+
+### Docs
+- `docs/connectors/README.md`: design, ingest rules, settings, and how to add
+  a connector.
+- `microsoft-capture-notes.md`: findings from the `record.py` capture and the
+  token decision.
+
+**Manual step:** none. To get the connectors, Outlook/Teams must be installed
+as apps and signed in once in Node's browser (tick "stay signed in"). To turn
+the background sync off, set `CONNECTORS_ENABLED=false`.
+
+---
+
 ## 0.15.2 — 2026-11-20
 
 Fixes found by the first real Outlook/Teams captures.
