@@ -82,8 +82,12 @@ questions and returns calibrated confidence:
 
 The gate probes the live server and records `capabilities` (`noul`, `choice`,
 `multiple`, `text`, `date`). Ollama/llama.cpp builds only do noul/choice, so
-callers check `await decision_gate.ensure_ready()` + `supports()` and degrade
-to one noul question per tag/group, skipping text/date reads.
+callers check `await decision_gate.ensure_ready()` + `supports()` and degrade,
+skipping text/date reads. Tagging then asks one single `choice` over all tags
+(the main tag) and confirms only the top runners-up from its probability
+distribution with a noul each (shares sum to 1, so a second true tag is
+squeezed and can't be read off the distribution directly). Tool routing asks
+one noul per tool family (there are only ~10).
 
 If the gate is offline, callers get `None` and **must** fall back deterministically.
 `plan_tools` returning `None` means "no opinion" — the caller attaches a safe

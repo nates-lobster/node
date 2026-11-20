@@ -3188,13 +3188,17 @@ class _FakeSystemOne:
             if typed_q and not self.typed:
                 return httpx.Response(400, json={"error": f"unsupported question type for {key}"})
             if q.get("type") == "noul":
-                answers[key] = {"type": "noul", "noul": 0.9}
+                # "Promo" never applies; everything else does.
+                answers[key] = {"type": "noul", "noul": 0.05 if "Promo" in q.get("instructions", "") else 0.9}
             elif q.get("multiple"):
                 first = list(q["criteria"])[0]
                 answers[key] = {"type": "choice", "choices": [first], "probabilities": {first: 0.9}}
             elif q.get("type") == "choice":
-                first = list(q["criteria"])[0]
-                answers[key] = {"type": "choice", "choice": first, "confidence": 0.8}
+                names = list(q["criteria"])
+                # Shape copied from a real Ollama d1 reply: shares sum to 1.
+                rest = 0.08 / max(1, len(names) - 1)
+                probs = {n: (0.92 if i == 0 else rest) for i, n in enumerate(names)}
+                answers[key] = {"type": "choice", "choice": names[0], "probabilities": probs, "confidence": 0.88}
             elif q.get("type") == "date":
                 answers[key] = {"type": "date", "date": "2026-03-14", "text": "2026-03-14", "found": 0.9}
             else:
@@ -3242,7 +3246,7 @@ def test_v013_gate_probe_detects_typed_answer_support(monkeypatch, typed):
 
 @pytest.mark.parametrize("typed", [False, True])
 def test_v013_tagging_degrades_to_per_tag_questions(monkeypatch, typed):
-    """Without multi-select, tagging asks one yes/no per tag and never sends typed questions."""
+    """Without multi-select: one choice for the main tag, then yes/no on a few runners-up only."""
     import asyncio
 
     from app.ai_providers import ai_provider_registry
@@ -3253,20 +3257,28 @@ def test_v013_tagging_degrades_to_per_tag_questions(monkeypatch, typed):
     monkeypatch.setattr(ai_provider_registry, "decision_model_preference", lambda: "auto")
     decision_gate.invalidate()
     try:
-        tags = [
-            {"name": "School", "description": "Classes", "important": True},
-            {"name": "Promo", "description": "Marketing"},
-        ]
+        tags = [{"name": "School", "description": "Classes", "important": True}, {"name": "Promo", "description": "Marketing"}]
+        tags += [{"name": f"Club {i}", "description": f"Club number {i}"} for i in range(20)]
+        asyncio.run(decision_gate.status(force=True))  # probe first, so only tagging requests follow
+        before = len(fake.requests)
         res = asyncio.run(
             tag_notification(source_app="Schoology", title="Lab report due Friday", body="Bring goggles", tags=tags)
         )
-        assert res is not None and "School" in res["tags"]
-        sent = fake.requests[-1]["questions"]
+        assert res is not None and res["category"] == "School"
+        sent_batches = [r["questions"] for r in fake.requests[before:] if "state" in r and r.get("questions")]
+        first = sent_batches[0]
         if typed:
-            assert sent["tags"].get("multiple") is True and "clean_title" in sent
+            assert first["tags"].get("multiple") is True and "clean_title" in first
+            assert len(sent_batches) == 1
         else:
-            assert "tags" not in sent and "clean_title" not in sent
-            assert {"tag_0", "tag_1"} <= set(sent) and all(sent[k]["type"] == "noul" for k in ("tag_0", "tag_1"))
+            assert "tags" not in first and "clean_title" not in first
+            assert first["primary_category"]["type"] == "choice"
+            assert not any(k.startswith("tag_") for k in first)
+            # Second request: a handful of runners-up, not all 22 tags.
+            assert len(sent_batches) == 2
+            extra = sent_batches[1]
+            assert 1 <= len(extra) <= 4 and all(q["type"] == "noul" for q in extra.values())
+            assert "Promo" not in res["tags"]  # confirmed "no"
 
         plan = asyncio.run(plan_tools("add band practice to my calendar friday", tool_names=["create_calendar_event"]))
         assert plan is not None and "calendar" in plan["groups"]
@@ -3299,3 +3311,41 @@ def test_v013_autosort_keeps_user_corrected_tags(client: TestClient):
     rows = rows if isinstance(rows, list) else rows.get("notifications", rows.get("items", []))
     row = next(r for r in rows if r["id"] == nid)
     assert row["category"] == "Professors"
+
+
+def test_v013_extra_tag_candidates_from_real_ollama_distribution():
+    """Distribution copied from a real `ollama` d1 reply (choice, single)."""
+    from app.decision_gate import _extra_tag_candidates
+
+    dist = {"School": 0.0756, "Deadline": 0.9160, "Promo": 0.0044, "Social": 0.0041}
+    names = ["School", "Deadline", "Promo", "Social"]
+    cands = _extra_tag_candidates(names, "Deadline", dist)
+    assert cands[0] == "School"  # the squeezed second tag is checked first
+    assert "Deadline" not in cands and len(cands) <= 4
+
+    many = {f"T{i}": 0.001 for i in range(40)}
+    many.update({"Deadline": 0.8, "School": 0.12, "Work": 0.06})
+    cands = _extra_tag_candidates(list(many), "Deadline", many)
+    assert cands[:2] == ["School", "Work"] and len(cands) <= 4
+
+    # No probabilities from the server: fall back to checking tags directly (bounded).
+    assert len(_extra_tag_candidates([f"T{i}" for i in range(30)], "T0", {})) == 12
+
+
+def test_v013_first_call_after_restart_probes_before_choosing_mode(monkeypatch):
+    import asyncio
+
+    from app.ai_providers import ai_provider_registry
+    from app.decision_gate import decision_gate, tag_notification
+
+    fake = _FakeSystemOne(typed=True)
+    _patch_gate_transport(monkeypatch, fake)
+    monkeypatch.setattr(ai_provider_registry, "decision_model_preference", lambda: "auto")
+    decision_gate.invalidate()  # like a fresh start: nothing probed yet
+    try:
+        res = asyncio.run(tag_notification(source_app="Mail", title="Lab report due Friday", tags=[{"name": "School"}, {"name": "Promo"}]))
+        assert res is not None
+        tagging = [r["questions"] for r in fake.requests if "primary_category" in (r.get("questions") or {})]
+        assert tagging and tagging[-1]["tags"].get("multiple") is True
+    finally:
+        decision_gate.invalidate()
