@@ -817,8 +817,11 @@ async def tag_notification(
         "body": (body or "")[:2400],
         "instruction": "Tag this Inbox item. Pick every tag that genuinely applies.",
     }
-    # Multi-select when the runtime supports it; otherwise one yes/no per tag
-    # (noul is supported everywhere System One is).
+    # Multi-select when the runtime supports it. Otherwise (Ollama/llama.cpp)
+    # the single `choice` below returns a probability for every tag; those sum
+    # to 1, so a second applicable tag gets squeezed (School 0.08 next to
+    # Deadline 0.92). We therefore confirm only the few runners-up with a noul
+    # each in a second, small request instead of asking about every tag.
     if not await decision_gate.ensure_ready():
         return None
     use_multiple = decision_gate.supports("multiple")
@@ -832,9 +835,6 @@ async def tag_notification(
             criteria,
             multiple=True,
         )
-    else:
-        for idx, name in enumerate(tag_names):
-            questions[f"tag_{idx}"] = noul(f"Does the tag '{name}' apply to this item? {criteria[name]}")
     questions.update({
         "primary_category": choice(
             "Which single tag is the best primary category for the Inbox?",
@@ -875,12 +875,14 @@ async def tag_notification(
     tag_list: List[str] = []
     picked_labels: List[str] = list(answers.get("tags").labels) if answers.get("tags") else []
     if not use_multiple:
-        scored = []
-        for idx, name in enumerate(tag_names):
-            ans = answers.get(f"tag_{idx}")
-            if ans is not None and ans.is_yes:
-                scored.append((float(ans.confidence or 0.5), name))
-        picked_labels = [name for _, name in sorted(scored, reverse=True)[:4]]
+        primary_ans = answers.get("primary_category")
+        picked_labels = await _confirm_extra_tags(
+            state,
+            criteria,
+            tag_names,
+            primary=(primary_ans.text if primary_ans else ""),
+            distribution=(primary_ans.distribution if primary_ans else {}),
+        )
     for lbl in picked_labels:
         for piece in _TAG_SPLIT_RE.split(lbl):
             nm = _norm_tag(piece)
@@ -939,6 +941,66 @@ async def tag_notification(
         "confidence": confidence,
         "engine": "lfm3-d1",
     }
+
+
+# Runners-up from the single-choice distribution that get a yes/no check.
+EXTRA_TAG_CANDIDATES = 3
+EXTRA_TAG_MIN_SHARE = 0.05  # anything above this share is checked too (cap below)
+EXTRA_TAG_MAX_CHECKS = 4
+EXTRA_TAG_YES = 0.6  # stricter than 0.5: extra tags should be clearly true
+EXTRA_TAG_MAX = 3
+
+
+def _extra_tag_candidates(
+    tag_names: Sequence[str],
+    primary: str,
+    distribution: Dict[str, float],
+) -> List[str]:
+    """Which non-primary tags deserve a yes/no check, best first."""
+    primary_n = _norm_tag(primary)
+    by_norm = {_norm_tag(n): n for n in tag_names}
+    shares: Dict[str, float] = {}
+    for label, share in (distribution or {}).items():
+        name = by_norm.get(_norm_tag(label))
+        if name and _norm_tag(name) != primary_n:
+            shares[name] = max(shares.get(name, 0.0), float(share or 0.0))
+    if not shares:
+        # Server gave no per-option probabilities: check every tag, within reason.
+        return [n for n in tag_names if _norm_tag(n) != primary_n][:12]
+    ranked = sorted(shares.items(), key=lambda kv: kv[1], reverse=True)
+    picked = [n for i, (n, sh) in enumerate(ranked) if i < EXTRA_TAG_CANDIDATES or sh >= EXTRA_TAG_MIN_SHARE]
+    return picked[:EXTRA_TAG_MAX_CHECKS]
+
+
+async def _confirm_extra_tags(
+    state: Dict[str, Any],
+    criteria: Dict[str, str],
+    tag_names: Sequence[str],
+    *,
+    primary: str,
+    distribution: Dict[str, float],
+) -> List[str]:
+    """Second pass for runtimes without multi-select: noul on a few runners-up."""
+    candidates = _extra_tag_candidates(tag_names, primary, distribution)
+    if not candidates:
+        return []
+    questions = {
+        f"tag_{idx}": noul(f"Does the tag '{name}' also apply to this item? {criteria.get(name, '')}".strip())
+        for idx, name in enumerate(candidates)
+    }
+    answers = await decision_gate.ask(state, questions)
+    if not answers:
+        return []
+    scored = []
+    for idx, name in enumerate(candidates):
+        ans = answers.get(f"tag_{idx}")
+        if ans is None:
+            continue
+        # noul arrives as a probability; a bare true/false counts as fairly sure.
+        score = float(ans.confidence or 0.0) or (0.9 if ans.is_yes else 0.0)
+        if score >= EXTRA_TAG_YES:
+            scored.append((score, name))
+    return [name for _, name in sorted(scored, reverse=True)[:EXTRA_TAG_MAX]]
 
 
 # ===========================================================================
