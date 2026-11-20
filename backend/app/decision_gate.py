@@ -751,24 +751,46 @@ def compute_dedupe_key(source_app: str, title: str, *, sender: str = "", body: s
     """
     Content-addressed identity for an Inbox item.
 
-    Deliberately ignores the *source app* and the *sender display form* (a
-    service name vs. a person's name) so the same real-world event arriving
-    through Gmail + Canvas, or twice from the same scraper with a different
-    sender label, collapses into ONE Inbox row with merged tags.
+    Order-free words of the subject with the sender label and app name removed
+    (see ``inbox_ingest.content_tokens``), topped up from the body only when the
+    subject is too short to be specific. "Ms. Lee — Lab report due Friday" and
+    "Lab report due Friday" get the same key. Fuzzy matching at ingest
+    (``inbox_ingest.absorb_or_none``) catches copies this exact key misses.
     """
-    text = " ".join([title or "", body[:600]]).lower()
-    text = re.sub(r"https?://\S+", " ", text)
-    text = re.sub(r"\d{1,2}[:/.-]\d{1,2}(?:[:/.-]\d{2,4})?", " ", text)  # times / short dates
-    text = re.sub(r"[^a-z0-9@.\s]", " ", text)
-    tokens = [t for t in text.split() if len(t) > 2 and t not in _STOPWORDS]
-    # Email addresses are strong identity signals: keep the local part only.
-    addrs = sorted({t.split("@")[0] for t in tokens if "@" in t})
-    body_tokens = [t for t in tokens if "@" not in t]
-    head = " ".join(body_tokens[:18])
     import hashlib
 
-    basis = "|".join([head, ",".join(addrs[:3]), str(len(body_tokens) // 6)])
+    from .inbox_ingest import content_tokens
+
+    words = sorted(content_tokens(title, "", sender=sender, source_app=source_app))
+    if len(words) < 4:
+        extra = [w for w in sorted(content_tokens("", body[:600], sender=sender, source_app=source_app)) if w not in words]
+        words = words + extra[: 8 - len(words)]
+    basis = " ".join(words[:16]) or (title or "").strip().lower()
     return hashlib.sha1(basis.encode("utf-8", "ignore")).hexdigest()[:24]
+
+
+async def same_item_probability(a: Dict[str, str], b: Dict[str, str]) -> Optional[float]:
+    """Decision model: are these two Inbox rows the same message/event? None if offline."""
+    if not await decision_gate.ensure_ready():
+        return None
+
+    def _view(x: Dict[str, str]) -> Dict[str, str]:
+        return {k: str(x.get(k) or "")[:600] for k in ("app", "sender", "subject", "preview")}
+
+    answers = await decision_gate.ask(
+        {"item_a": _view(a), "item_b": _view(b)},
+        {
+            "same": noul(
+                "Are item A and item B the same message or the same real-world event with the same content, "
+                "even if the app, the sender label or the wording differs? Answer no if they are different "
+                "messages about related things (for example an assignment being posted vs. being graded)."
+            )
+        },
+    )
+    if not answers or answers.get("same") is None:
+        return None
+    ans = answers["same"]
+    return float(ans.confidence or 0.0) or (0.9 if ans.is_yes else 0.0)
 
 
 def build_tag_criteria(tags: Sequence[Dict[str, Any]]) -> Dict[str, str]:

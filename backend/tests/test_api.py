@@ -2596,8 +2596,10 @@ def test_v102_gmail_query_dsl_matches_tags_senders_dates(client: TestClient):
     assert client.delete("/api/v1/inbox/filters/important").status_code == 400
 
 
-def test_v102_dedupe_merges_identical_messages_and_unions_tags(client: TestClient):
-    """The same event arriving from 3 feeds becomes ONE row with merged tags."""
+def test_v102_dedupe_merges_identical_messages_without_tag_pileup(client: TestClient):
+    """The same event arriving from 3 feeds becomes ONE row. Since 0.14 the tags are
+    not unioned (that made one email show under every copy's tag); the survivor keeps
+    one copy's tags and is queued to be re-tagged from the merged content."""
     from app.decision_gate import compute_dedupe_key
 
     title = "Orchestra rehearsal moved to 7pm"
@@ -2633,8 +2635,8 @@ def test_v102_dedupe_merges_identical_messages_and_unions_tags(client: TestClien
     remaining = [x for x in client.get("/api/v1/notifications?limit=300").json() if x["id"] in ids]
     assert len(remaining) == 1
     survivor = remaining[0]
-    for tag in ("School", "Urgent", "Personal"):
-        assert tag in survivor["tags_csv"]
+    assert survivor["tags_csv"] == "School"
+    assert survivor["ai_processed"] is False
     assert survivor["merged_count"] >= 3
     assert survivor["dedupe_sources"]
 
@@ -3349,3 +3351,162 @@ def test_v013_first_call_after_restart_probes_before_choosing_mode(monkeypatch):
         assert tagging and tagging[-1]["tags"].get("multiple") is True
     finally:
         decision_gate.invalidate()
+
+
+# ---------------------------------------------------------------------------
+# 0.14: ingest-time duplicate detection ("I see one message 5 times")
+# ---------------------------------------------------------------------------
+def _uniq() -> str:
+    import uuid
+
+    return "q" + uuid.uuid4().hex[:8]
+
+
+def _post_notif(client: TestClient, title: str, message: str = "", app: str = "School Mail", indicator: str = "dom_badge"):
+    res = client.post(
+        "/api/v1/notifications",
+        json={"source_app": app, "title": title, "message": message, "indicator_type": indicator},
+    )
+    assert res.status_code == 201, res.text
+    return res.json()
+
+
+def _all_notifs(client: TestClient):
+    rows = client.get("/api/v1/notifications").json()
+    return rows if isinstance(rows, list) else rows.get("notifications", rows.get("items", []))
+
+
+def test_v014_same_email_in_every_shape_is_one_row(client: TestClient):
+    w = _uniq()  # unique word so other tests' rows can't match
+    first = _post_notif(client, f"Lab report {w} due Friday", "Bring goggles to class")
+    # JSON/websocket shape: sender glued to the subject
+    b = _post_notif(client, f"Ms. Lee — Lab report {w} due Friday")
+    # desktop pop-up shape: sender as title, subject in the body
+    c = _post_notif(client, "Ms. Lee", f"Lab report {w} due Friday, bring goggles")
+    # same email reported by another app with the service as sender
+    d = _post_notif(client, "Schoology", f"Lab report {w} due Friday, bring goggles to class.", app="Schoology")
+    assert b["id"] == c["id"] == d["id"] == first["id"]
+
+    # Related but different emails stay separate.
+    graded = _post_notif(client, f"Lab report {w} graded", "Your lab report received 92/100")
+    trip = _post_notif(client, f"Field trip {w} permission slip due Friday", "Bring signed form")
+    assert len({first["id"], graded["id"], trip["id"]}) == 3
+
+    row = next(r for r in _all_notifs(client) if r["id"] == first["id"])
+    assert row["merged_count"] == 4
+    assert row["title"] == f"Lab report {w} due Friday"  # the real subject, not "Ms. Lee"
+    assert "Schoology" in (row["dedupe_sources"] or "")
+
+
+def test_v014_duplicate_does_not_resurrect_a_read_message(client: TestClient):
+    w = _uniq()
+    first = _post_notif(client, f"Chess club {w} meeting moved to Thursday", "Room 204 after school")
+    assert client.patch(f"/api/v1/notifications/{first['id']}", json={"read_state": True}).status_code == 200
+    again = _post_notif(client, f"Mr. Kim — Chess club {w} meeting moved to Thursday")
+    assert again["id"] == first["id"] and again["read_state"] is True
+
+
+def test_v014_counter_pings_update_one_row_per_app(client: TestClient):
+    app_name = f"Pinger {_uniq()}"
+    ids = {_post_notif(client, f"{app_name} ping", "Count updated (3).", app=app_name, indicator="ping_only")["id"] for _ in range(3)}
+    assert len(ids) == 1
+
+
+def test_v014_merge_keeps_user_tag_and_never_unions_tags(client: TestClient):
+    from sqlmodel import Session
+
+    from app.database import engine
+    from app.inbox_ingest import merge_rows
+    from app.models import Notification
+
+    w = _uniq()
+    with Session(engine) as s:
+        a = Notification(source_app="Mail", title=f"Robotics {w} signup closes", tags_csv="Promo, Social", category="Promo")
+        b = Notification(source_app="Mail", title=f"Robotics {w} signup closes", tags_csv="Clubs", category="Clubs", tag_corrected_by_user=True)
+        c = Notification(source_app="Mail", title=f"Robotics {w} signup closes", tags_csv="Deadline, Finance", category="Deadline")
+        s.add_all([a, b, c])
+        s.commit()
+        merge_rows(s, a, [b, c])
+        s.commit()
+        s.refresh(a)
+        assert a.tags_csv == "Clubs" and a.category == "Clubs" and a.tag_corrected_by_user
+        assert a.merged_count == 3
+
+        d = Notification(source_app="Mail", title=f"Debate {w} tryouts", tags_csv="School", category="School", ai_processed=True)
+        e = Notification(source_app="Mail", title=f"Debate {w} tryouts", tags_csv="Promo", category="Promo", ai_processed=True)
+        s.add_all([d, e])
+        s.commit()
+        merge_rows(s, d, [e])
+        s.commit()
+        s.refresh(d)
+        assert d.tags_csv == "School"  # not "School, Promo"
+        assert d.ai_processed is False  # queued to be re-tagged from the merged content
+
+
+def test_v014_dedupe_button_cleans_up_existing_copies(client: TestClient):
+    from sqlmodel import Session
+
+    from app.database import engine
+    from app.models import Notification
+
+    w = _uniq()
+    with Session(engine) as s:  # rows stored before ingest matching existed
+        rows = [
+            Notification(source_app="Outlook", title=f"Band {w} concert tickets on sale", message="Order online by Monday"),
+            Notification(source_app="Outlook", title=f"Ms. Diaz — Band {w} concert tickets on sale"),
+            Notification(source_app="Schoology", title="Ms. Diaz", message=f"Band {w} concert tickets on sale, order online"),
+        ]
+        s.add_all(rows)
+        s.commit()
+        ids = [r.id for r in rows]
+    preview = client.post("/api/v1/inbox/dedupe?dry_run=true").json()
+    assert any(g["kept_id"] == ids[0] and set(g["merged_ids"]) == set(ids[1:]) for g in preview["groups"])
+    res = client.post("/api/v1/inbox/dedupe").json()
+    assert res["removed"] >= 2
+    left = {r["id"] for r in _all_notifs(client)}
+    assert ids[0] in left and not (set(ids[1:]) & left)
+
+
+@pytest.mark.parametrize("prob,merged", [(0.95, True), (0.1, False)])
+def test_v014_borderline_pairs_go_to_the_decision_model(monkeypatch, prob, merged):
+    import asyncio
+
+    from sqlmodel import Session
+
+    import app.decision_gate as dg
+    from app.database import engine
+    from app.inbox_ingest import borderline_candidates, confirm_borderline_with_gate
+    from app.models import Notification
+
+    w = _uniq()
+    with Session(engine) as s:
+        # Shares the topic words (4 of 7) but not the rest: borderline, not certain.
+        a = Notification(source_app="Mail", title=f"Spanish {w} essay draft feedback posted", message="Check comments before revising")
+        b = Notification(source_app="Canvas", title=f"Spanish {w} essay due tomorrow", message="Submit draft on Canvas")
+        s.add_all([a, b])
+        s.commit()
+        a_id, b_id = a.id, b.id
+        assert [r.id for r in borderline_candidates(s, b)] == [a_id]  # similar, not certain
+
+    seen = []
+
+    async def fake_same(x, y):
+        seen.append((x["subject"], y["subject"]))
+        return prob
+
+    monkeypatch.setattr(dg, "same_item_probability", fake_same)
+    removed = asyncio.run(confirm_borderline_with_gate([b_id]))
+    assert seen, "decision model was not asked"
+    with Session(engine) as s:
+        assert (s.get(Notification, b_id) is None) is merged
+        assert s.get(Notification, a_id) is not None
+    assert removed == (1 if merged else 0)
+
+
+def test_v014_numbers_keep_similar_school_items_apart():
+    from app.inbox_ingest import content_tokens, is_same
+
+    a = content_tokens("Unit 5 quiz due tomorrow", "Algebra II, period 3", source_app="Schoology")
+    b = content_tokens("Unit 6 quiz due tomorrow", "Algebra II, period 3", source_app="Schoology")
+    assert not is_same(a, b)
+    assert is_same(a, content_tokens("Mr. Ortiz — Unit 5 quiz due tomorrow", "", source_app="Schoology"))
