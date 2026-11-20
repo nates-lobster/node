@@ -1289,7 +1289,7 @@ def test_v90_streaming_full_tools_inbox_tasks_monitors_and_widgets(client: TestC
     ms = client.get("/api/v1/models/status")
     assert ms.status_code == 200
     ms_data = ms.json()
-    assert "primary_chat" in ms_data and "fast_router" in ms_data and "von_router" in ms_data
+    assert "chat_model" in ms_data and "decision_model" in ms_data
 
     # 2. ProtonMail accessibility artifact scrubbing + no redundant "ProtonMail:" prefix
     raw_garbled = (
@@ -2361,8 +2361,8 @@ def test_v101_app_rename_cascades_without_duplicate_inbox_tags(client: TestClien
     assert "Temp School Mail" not in hb_names
 
 
-def test_v101_inbox_custom_categories_and_von_first_autosort(client: TestClient):
-    """Custom global + per-app Inbox categories & Von-first auto-sorting with fast-model fallback."""
+def test_v101_inbox_custom_categories_and_decision_first_autosort(client: TestClient):
+    """Custom global + per-app Inbox categories & decision-model-first auto-sorting with chat-model fallback."""
     cat_res = client.post(
         "/api/v1/notifications/categories",
         json={"action": "add", "categories": ["Professors", "Receipts"]},
@@ -2371,7 +2371,7 @@ def test_v101_inbox_custom_categories_and_von_first_autosort(client: TestClient)
     data = cat_res.json()
     assert "Professors" in data["global_categories"]
     assert "Receipts" in data["global_categories"]
-    assert data["autosort_engine"]["primary"] == "von"
+    assert data["autosort_engine"]["primary"] == "decision"
 
     client.post(
         "/api/v1/notifications",
@@ -2385,7 +2385,7 @@ def test_v101_inbox_custom_categories_and_von_first_autosort(client: TestClient)
     sorted_res = client.post("/api/v1/notifications/autosort")
     assert sorted_res.status_code == 200
     assert sorted_res.json()["status"] == "ok"
-    assert sorted_res.json()["autosort_engine"]["primary"] == "von"
+    assert sorted_res.json()["autosort_engine"]["primary"] == "decision"
 
 
 def test_v101_unified_ai_instructions_feedback_and_anti_overfit_self_improve(client: TestClient):
@@ -3058,3 +3058,221 @@ def test_v012_legacy_apps_registry_migrates_into_data(tmp_path):
     fresh = AppsConfigManager(config_path=tmp_path / "fresh" / "apps_config.yaml")
     assert fresh.migrate_legacy_config([str(empty_legacy)]) is None
     assert not fresh.config_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# 0.13: two models (decision + chat), Von removed
+# ---------------------------------------------------------------------------
+def _fake_discovery(models):
+    """Discovery rows shaped like ai_providers.discover_all_models output."""
+    from app.ai_providers import _estimate_param_rank, is_decision_model
+
+    return [
+        {
+            "id": f"ollama-default::{name}",
+            "model": name,
+            "provider_id": "ollama-default",
+            "provider_name": "Ollama Server",
+            "protocol": "ollama",
+            "base_url": "http://localhost:11434",
+            "loaded_in_ram": loaded,
+            "size_rank": _estimate_param_rank(name),
+            "supports_thinking": False,
+            "kind": "decision" if is_decision_model(name) else "chat",
+        }
+        for name, loaded in models
+    ]
+
+
+def test_v013_decision_model_detection():
+    from app.ai_providers import is_decision_model
+
+    for name in ("d1", "d1:2b", "d1-omni", "d1.2", "ollama-default::d1:latest", "hf.co/LiquidAI/d1-2B-GGUF:Q8_0", "lfm3-d1"):
+        assert is_decision_model(name), name
+    for name in ("lfm3", "lfm3:1.7b", "qwen3.5:2b", "gemma4:e2b", "llama3.1:8b", "dolphin3", "deepseek-r1:1.5b"):
+        assert not is_decision_model(name), name
+
+
+def test_v013_chat_resolution_never_picks_decision_model(monkeypatch):
+    """d1 loaded in RAM must not become the chat model, for any legacy role name."""
+    import asyncio
+
+    from app.ai_providers import ai_provider_registry
+
+    rows = _fake_discovery([("d1:2b", True), ("lfm3:1.7b", False)])
+
+    async def fake_discover(force=False):
+        ai_provider_registry._discovery_cache = rows
+        return rows
+
+    monkeypatch.setattr(ai_provider_registry, "discover_all_models", fake_discover)
+    for role in ("chat", "primary", "fast", "briefing"):
+        target = asyncio.run(ai_provider_registry.resolve_target(role=role))
+        assert target and target["model"] == "lfm3:1.7b", role
+    # Even an explicit request for a decision model falls back to a chat model.
+    target = asyncio.run(ai_provider_registry.resolve_target(role="chat", explicit_model="d1"))
+    assert target["model"] == "lfm3:1.7b"
+    assert ai_provider_registry.discovered_decision_models() == ["d1:2b"]
+
+
+def test_v013_routing_migrates_legacy_primary_fast(tmp_path):
+    import json
+
+    from app.ai_providers import AIProviderRegistry
+
+    path = tmp_path / "ai_providers.json"
+    path.write_text(json.dumps({"routing": {"primary_model": "ollama-default::lfm3:1.7b", "fast_model": "qwen3.5:0.8b", "briefing_model": "auto"}}))
+    routing = AIProviderRegistry(str(path)).load_state()["routing"]
+    assert routing["chat_model"] == "ollama-default::lfm3:1.7b"
+    assert routing["decision_model"] == "auto"
+    assert not {"primary_model", "fast_model", "briefing_model"} & set(routing)
+
+    # Primary on auto: the old fast pick becomes the chat model.
+    path.write_text(json.dumps({"routing": {"primary_model": "auto", "fast_model": "qwen3.5:0.8b"}}))
+    assert AIProviderRegistry(str(path)).load_state()["routing"]["chat_model"] == "qwen3.5:0.8b"
+
+    # A decision model saved as the chat model is dropped back to auto.
+    path.write_text(json.dumps({"routing": {"chat_model": "d1"}}))
+    assert AIProviderRegistry(str(path)).load_state()["routing"]["chat_model"] == "auto"
+
+
+def test_v013_routing_endpoint_and_status_shape(client: TestClient):
+    bad = client.patch("/api/v1/models/routing", json={"chat_model": "d1:2b"})
+    assert bad.status_code == 400
+
+    ok = client.patch("/api/v1/models/routing", json={"chat_model": "auto", "decision_model": "d1:2b"})
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["routing"]["decision_model"] == "d1:2b"
+    assert body["routing"]["chat_model"] == "auto"
+    assert "primary_model" not in body["routing"] and "fast_model" not in body["routing"]
+
+    st = client.get("/api/v1/models/status").json()
+    assert st["chat_model"]["configured"] == "auto"
+    assert st["decision_model"]["configured"] == "d1:2b"
+    assert "role" in st["decision_model"] and "capabilities" in st["decision_model"]
+    assert not any("von" in k for k in st)
+
+    gate = client.get("/api/v1/decision-gate/status").json()
+    assert gate["model"] == "d1:2b"
+    assert gate["source"] == "ollama"  # no DECISION_BASE_URL: the decision model lives on Ollama
+
+    # Old clients still sending primary_model are mapped onto chat_model.
+    legacy = client.patch("/api/v1/models/routing", json={"primary_model": "auto", "decision_model": "auto"})
+    assert legacy.status_code == 200 and legacy.json()["routing"]["chat_model"] == "auto"
+
+    from app.config import settings
+
+    assert not any(name.startswith("von") for name in type(settings).model_fields)
+
+
+class _FakeSystemOne:
+    """Minimal Ollama-like server: /v1/models + /v1/systemone (noul/choice only, optionally typed)."""
+
+    def __init__(self, typed: bool):
+        self.typed = typed
+        self.requests = []
+
+    def handler(self, request):
+        import json
+
+        import httpx
+
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "lfm3:1.7b"}, {"id": "d1:2b"}]})
+        body = json.loads(request.content or b"{}")
+        self.requests.append(body)
+        answers = {}
+        for key, q in (body.get("questions") or {}).items():
+            typed_q = q.get("multiple") or q.get("type") in ("text", "date", "number")
+            if typed_q and not self.typed:
+                return httpx.Response(400, json={"error": f"unsupported question type for {key}"})
+            if q.get("type") == "noul":
+                answers[key] = {"type": "noul", "noul": 0.9}
+            elif q.get("multiple"):
+                first = list(q["criteria"])[0]
+                answers[key] = {"type": "choice", "choices": [first], "probabilities": {first: 0.9}}
+            elif q.get("type") == "choice":
+                first = list(q["criteria"])[0]
+                answers[key] = {"type": "choice", "choice": first, "confidence": 0.8}
+            elif q.get("type") == "date":
+                answers[key] = {"type": "date", "date": "2026-03-14", "text": "2026-03-14", "found": 0.9}
+            else:
+                answers[key] = {"type": "text", "text": "Ms. Lee", "found": 0.9}
+        return httpx.Response(200, json={"model": body.get("model"), "answers": answers})
+
+
+def _patch_gate_transport(monkeypatch, fake):
+    import httpx
+
+    import app.decision_gate as dg
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(fake.handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(dg.httpx, "AsyncClient", client_factory)
+
+
+@pytest.mark.parametrize("typed", [False, True])
+def test_v013_gate_probe_detects_typed_answer_support(monkeypatch, typed):
+    import asyncio
+
+    from app.ai_providers import ai_provider_registry
+    from app.decision_gate import decision_gate
+
+    fake = _FakeSystemOne(typed=typed)
+    _patch_gate_transport(monkeypatch, fake)
+    monkeypatch.setattr(ai_provider_registry, "decision_model_preference", lambda: "auto")
+    monkeypatch.setattr(ai_provider_registry, "_discovery_cache", [])
+    decision_gate.invalidate()
+    try:
+        st = asyncio.run(decision_gate.status(force=True))
+        assert st["online"] is True
+        assert st["model"] == "d1:2b"  # found via /v1/models, not the chat model
+        assert st["base_url"] == ai_provider_registry.default_ollama_base()
+        caps = st["capabilities"]
+        assert caps["noul"] and caps["choice"]
+        assert caps["multiple"] is typed and caps["text"] is typed and caps["date"] is typed
+    finally:
+        decision_gate.invalidate()
+
+
+@pytest.mark.parametrize("typed", [False, True])
+def test_v013_tagging_degrades_to_per_tag_questions(monkeypatch, typed):
+    """Without multi-select, tagging asks one yes/no per tag and never sends typed questions."""
+    import asyncio
+
+    from app.ai_providers import ai_provider_registry
+    from app.decision_gate import decision_gate, plan_tools, tag_notification
+
+    fake = _FakeSystemOne(typed=typed)
+    _patch_gate_transport(monkeypatch, fake)
+    monkeypatch.setattr(ai_provider_registry, "decision_model_preference", lambda: "auto")
+    decision_gate.invalidate()
+    try:
+        tags = [
+            {"name": "School", "description": "Classes", "important": True},
+            {"name": "Promo", "description": "Marketing"},
+        ]
+        res = asyncio.run(
+            tag_notification(source_app="Schoology", title="Lab report due Friday", body="Bring goggles", tags=tags)
+        )
+        assert res is not None and "School" in res["tags"]
+        sent = fake.requests[-1]["questions"]
+        if typed:
+            assert sent["tags"].get("multiple") is True and "clean_title" in sent
+        else:
+            assert "tags" not in sent and "clean_title" not in sent
+            assert {"tag_0", "tag_1"} <= set(sent) and all(sent[k]["type"] == "noul" for k in ("tag_0", "tag_1"))
+
+        plan = asyncio.run(plan_tools("add band practice to my calendar friday", tool_names=["create_calendar_event"]))
+        assert plan is not None and "calendar" in plan["groups"]
+        sent = fake.requests[-1]["questions"]
+        assert ("event_title" in sent) is typed
+        assert not any(q.get("multiple") for q in sent.values()) or typed
+    finally:
+        decision_gate.invalidate()
+

@@ -745,9 +745,10 @@ class ModelPingRequest(BaseModel):
 
 
 class AIRoleRoutingRequest(BaseModel):
+    chat_model: Optional[str] = PydanticField(default=None, max_length=160)
+    decision_model: Optional[str] = PydanticField(default=None, max_length=160)
+    # Deprecated alias for chat_model (pre-0.13 clients). Ignored when chat_model is sent.
     primary_model: Optional[str] = PydanticField(default=None, max_length=160)
-    fast_model: Optional[str] = PydanticField(default=None, max_length=160)
-    briefing_model: Optional[str] = PydanticField(default=None, max_length=160)
     enable_web_search: Optional[bool] = None
     auto_agent_logging: Optional[bool] = None
     searxng_url: Optional[str] = PydanticField(default=None, max_length=500)

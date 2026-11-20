@@ -39,17 +39,25 @@ services:
       OS_SETTINGS_PATH: /data/os_settings.json
       OS_PRESETS_PATH: /data/os_presets.json
       SCHEDULE_SETTINGS_PATH: /data/schedule_settings.json
+      # One Ollama serves both models: the chat model (/api/chat) and the
+      # decision model (/v1/systemone), chosen by name per request.
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-auto}
-      OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-auto}
+      CHAT_MODEL: ${CHAT_MODEL:-}
+      DECISION_MODEL: ${DECISION_MODEL:-auto}
+      # Optional: a separate System One server (llama.cpp / Liquid hosted API).
+      DECISION_BASE_URL: ${DECISION_BASE_URL:-}
+      DECISION_API_KEY: ${DECISION_API_KEY:-}
+      DECISION_TIMEOUT_SECONDS: ${DECISION_TIMEOUT_SECONDS:-12}
+      DECISION_ENABLED: ${DECISION_ENABLED:-true}
+      # Deprecated pre-0.13 names, still honoured when CHAT_MODEL is empty.
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      OLLAMA_FAST_MODEL: ${OLLAMA_FAST_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       SEARXNG_URL: ${SEARXNG_URL:-}
-      VON_BASE_URL: ${VON_BASE_URL:-}
-      VON_API_KEY: ${VON_API_KEY:-}
       OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-180}
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-4096}
       OLLAMA_NUM_THREADS: ${OLLAMA_NUM_THREADS:-4}
@@ -98,24 +106,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-
-  # ---------------------------------------------------------------------------
-  # Optional Module C: Von System One Decision Engine (OpenVINO CPU, /v1/systemone)
-  # Enable with: VON_BASE_URL=http://von:8000 docker compose --profile von up -d
-  # ---------------------------------------------------------------------------
-  von:
-    image: ghcr.io/wfzyx/von:cpu
-    container_name: hub-von
-    profiles: ["von"]
-    restart: unless-stopped
-    environment:
-      HF_HOME: /data/huggingface
-      VON_DEVICE: auto
-    volumes:
-      - ./data/von_hf:/data/huggingface
-    networks:
-      - hub_internal
-    mem_limit: 4g
 
 networks:
   hub_internal:

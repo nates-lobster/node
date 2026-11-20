@@ -862,7 +862,7 @@ SECRETARY_TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "manage_inbox_categories",
-            "description": "List, add, or remove custom Inbox sorting categories (globally or for a specific app_slug), or trigger Von/fast-AI auto-sorting.",
+            "description": "List, add, or remove custom Inbox sorting categories (globally or for a specific app_slug), or trigger AI auto-sorting.",
             "parameters": {
                 "type": "object",
                 "properties": {

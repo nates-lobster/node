@@ -42,7 +42,7 @@ def scrub_notification_artifacts(
     raw_message: str = "",
 ) -> Dict[str, Any]:
     """
-    Deterministically clean scraped DOM/accessibility artifacts before & alongside AI/Von:
+    Deterministically clean scraped DOM/accessibility artifacts before & alongside the AI models:
       1. Strips redundant `<Service>:` prefixes (since service badge is shown separately).
       2. Detects & strips ProtonMail/Gmail/Teams screen-reader labels (`SStar conversation`,
          `Unread email`, `Select message`) even when concatenated without spaces!
@@ -156,168 +156,80 @@ def _normalize_task_key(title: str) -> str:
 
 class MultiModelRouter:
     """
-    Coordinates Node's 3-Tier Local AI Stack:
-      1. Reasoning / Agent Model (`settings.ollama_model`, default `qwen3.5:2b`):
-         Streaming chat, collapsible `<think>` reasoning, full-OS tool execution, Executive Briefings.
-      2. Fast Utility Model (`settings.ollama_fast_model`, default `qwen3.5:0.8b`):
-         Fast non-thinking JSON extraction, notification title/preview cleanup, task estimation.
-         Auto-falls back to `settings.ollama_model` (`think=False`) if `0.8b` is not pulled yet.
-      3. Optional System One Decision Engine (`settings.von_base_url`, `/v1/systemone`):
-         Single-pass calibrated `Choice` / `Noul` / `Score` classification via Von (`wfzyx/von`).
+    Coordinates Node's two local models:
+
+      1. **Decision model** (`decision_gate`, LFM3 `d1` over System One `/v1/systemone`):
+         tagging, Important vs FYI, priority, tool planning. One forward pass, calibrated
+         probabilities, no generated text.
+      2. **Chat model** (`ai_provider_registry`, role `chat`, e.g. an LFM3 chat tag):
+         streaming chat, tools, briefings, JSON extraction. Also the fallback when the
+         decision model is offline.
+
+    Both normally live on the same Ollama server, picked by name per request.
+    Deterministic rules are the last resort, so the Inbox never stalls.
     """
 
     def __init__(self) -> None:
-        self._tags_cache_ts: float = 0.0
         self._available_ollama_models: List[str] = []
         self._ollama_online: bool = False
-        self._von_cache_ts: float = 0.0
-        self._von_online: bool = False
-        self._von_detail: str = "Not configured (optional)"
 
     @property
     def ollama_base(self) -> str:
         return settings.ollama_base_url.rstrip("/")
 
-    @property
-    def von_base(self) -> str:
-        return (settings.von_base_url or "").strip().rstrip("/")
-
     async def refresh_status(self, force: bool = False) -> Dict[str, Any]:
         from .ai_providers import ai_provider_registry
+        from .decision_gate import decision_gate
 
-        now = time.monotonic()
         discovered = await ai_provider_registry.discover_all_models(force=force)
         pub_state = ai_provider_registry.public_state()
         routing = pub_state.get("routing") or {}
 
-        self._available_ollama_models = [d["model"] for d in discovered]
+        chat_models = [d for d in discovered if d.get("kind") != "decision"]
+        decision_models = [d for d in discovered if d.get("kind") == "decision"]
+        self._available_ollama_models = [d["model"] for d in chat_models]
         self._ollama_online = len(discovered) > 0
 
-        if self.von_base:
-            if force or (now - self._von_cache_ts) > 30.0:
-                self._von_cache_ts = now
-                try:
-                    headers = {"Content-Type": "application/json"}
-                    if settings.von_api_key:
-                        headers["Authorization"] = f"Bearer {settings.von_api_key}"
-                    async with httpx.AsyncClient(timeout=2.0) as client:
-                        probe = await client.get(f"{self.von_base}/health")
-                        if probe.status_code < 500:
-                            self._von_online = True
-                            self._von_detail = f"Connected at {self.von_base} (/v1/systemone ready)"
-                        else:
-                            self._von_online = False
-                            self._von_detail = f"HTTP {probe.status_code} at {self.von_base}"
-                except Exception as exc:
-                    self._von_online = False
-                    self._von_detail = f"Unreachable at {self.von_base} ({exc.__class__.__name__})"
-        else:
-            self._von_online = False
-            self._von_detail = "Optional — set VON_BASE_URL (e.g. http://localhost:8000) to enable Von /v1/systemone"
-
-        primary_target = await ai_provider_registry.resolve_target(role="primary")
-        fast_target = await ai_provider_registry.resolve_target(role="fast")
-
-        primary_name = (
-            primary_target["model"]
-            if primary_target
-            else (routing.get("primary_model") or "auto")
-        )
-        fast_name = (
-            fast_target["model"]
-            if fast_target
-            else (routing.get("fast_model") or "auto")
-        )
+        chat_target = await ai_provider_registry.resolve_target(role="chat")
+        chat_name = chat_target["model"] if chat_target else (routing.get("chat_model") or "auto")
+        gate = await decision_gate.status(force=force)
 
         return {
             "ollama_reachable": self._ollama_online,
             "ollama_base_url": self.ollama_base,
-            "available_models": [d["model"] for d in discovered],
+            "available_models": [d["model"] for d in chat_models],
+            "decision_models": [d["model"] for d in decision_models],
             "discovered_models": discovered,
             "providers": pub_state.get("providers") or [],
             "routing": routing,
             "presets": pub_state.get("presets") or [],
-            "primary_chat": {
-                "model": primary_name,
-                "composite_id": primary_target["composite_id"] if primary_target else None,
-                "provider": primary_target["provider_name"] if primary_target else None,
-                "ready": bool(primary_target is not None),
+            "chat_model": {
+                "configured": routing.get("chat_model") or "auto",
+                "effective": chat_name,
+                "composite_id": chat_target["composite_id"] if chat_target else None,
+                "provider": chat_target["provider_name"] if chat_target else None,
+                "ready": bool(chat_target is not None),
+                "role": "Chat, tools, briefings and JSON extraction; fallback tagger",
             },
-            "fast_router": {
-                "model": fast_name,
-                "composite_id": fast_target["composite_id"] if fast_target else None,
-                "provider": fast_target["provider_name"] if fast_target else None,
-                "ready": bool(fast_target is not None),
-                "active_model": fast_name,
-            },
-            "von_router": {
-                "configured": bool(self.von_base),
-                "reachable": bool(self._von_online),
-                "model": settings.von_model or "von-1.3.7",
-                "detail": self._von_detail,
-            },
-            "reasoning_model": {
-                "configured": routing.get("primary_model") or "auto",
-                "effective": primary_name,
-                "installed": bool(primary_target is not None),
-                "role": "Server-Side Agentic Chat, Shared Multi-Agent Logging, Web Search & Full-OS Tools",
-            },
-            "fast_model": {
-                "configured": routing.get("fast_model") or "auto",
-                "effective": fast_name,
-                "installed": bool(fast_target is not None),
-                "using_fallback": False,
-                "role": "Sub-second Inbox Cleanup, Tagging & Task Duration Extraction (think=false)",
-            },
-            "von": {
-                "configured": bool(self.von_base),
-                "base_url": self.von_base or None,
-                "reachable": self._von_online,
-                "model": settings.von_model or "von-1.3.7",
-                "confidence_threshold": settings.von_confidence_threshold,
-                "detail": self._von_detail,
-                "role": "Optional Non-Autoregressive System One Classifier (/v1/systemone Choice/Noul/Score)",
+            "decision_model": {
+                "configured": routing.get("decision_model") or "auto",
+                "effective": gate.get("model") or "",
+                "online": bool(gate.get("online")),
+                "base_url": gate.get("base_url") or "",
+                "source": gate.get("source") or "",
+                "capabilities": gate.get("capabilities") or {},
+                "detail": gate.get("detail") or "",
+                "role": "Inbox tagging, importance, priority and tool planning (/v1/systemone)",
             },
         }
 
-    async def pick_fast_ollama_model(self) -> Optional[str]:
+    async def pick_chat_model(self) -> Optional[str]:
         from .ai_providers import ai_provider_registry
 
-        target = await ai_provider_registry.resolve_target(role="fast")
+        target = await ai_provider_registry.resolve_target(role="chat")
         return target["composite_id"] if target else None
 
-    async def von_system_one(
-        self,
-        state: Dict[str, Any],
-        questions: Dict[str, Any],
-        timeout: float = 3.0,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Execute a single-forward-pass query against a Von (`/v1/systemone`) server.
-        Returns the parsed `answers` dict or `None` if Von is disabled/unreachable.
-        """
-        if not self.von_base:
-            return None
-        headers = {"Content-Type": "application/json"}
-        if settings.von_api_key:
-            headers["Authorization"] = f"Bearer {settings.von_api_key}"
-        payload = {
-            "model": settings.von_model or "von-1.3.7",
-            "state": state,
-            "questions": questions,
-        }
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(f"{self.von_base}/v1/systemone", headers=headers, json=payload)
-                if resp.status_code != 200:
-                    return None
-                data = resp.json()
-                self._von_online = True
-                return data.get("answers") or data
-        except Exception:
-            return None
-
-    async def fast_json(
+    async def chat_json(
         self,
         system_prompt: str,
         user_prompt: str,
@@ -325,8 +237,8 @@ class MultiModelRouter:
         timeout: float = 18.0,
     ) -> Optional[Any]:
         """
-        Run a fast non-thinking structured JSON call on whichever fast model is active
-        (local Ollama `0.8b` / `gemma4:e2b`, remote Ollama, or Cloud API).
+        Run a non-thinking structured JSON call on the chat model
+        (local or remote Ollama, or a cloud API).
         """
         from .ai_providers import ai_provider_registry
 
@@ -336,7 +248,7 @@ class MultiModelRouter:
                     {"role": "system", "content": system_prompt + "\nReturn ONLY valid JSON with no markdown prose."},
                     {"role": "user", "content": user_prompt},
                 ],
-                role="fast",
+                role="chat",
                 enable_thinking=False,
                 temperature=0.15,
                 max_tokens=num_predict,
@@ -392,7 +304,7 @@ class MultiModelRouter:
 
         merged: List[str] = []
         seen = set()
-        # Put app-specific custom categories FIRST so Von & Fast AI prioritize user-defined app buckets!
+        # App-specific custom categories go FIRST so the models prioritise user-defined app buckets.
         for c in app_cats + global_cats:
             cl = c.strip()
             if cl and cl.lower() not in seen:
@@ -400,7 +312,7 @@ class MultiModelRouter:
                 merged.append(cl)
         return merged
 
-    def _build_von_category_criteria(self, categories: List[str]) -> Dict[str, str]:
+    def _build_category_criteria(self, categories: List[str]) -> Dict[str, str]:
         builtin_desc = {
             "urgent": "Time-sensitive deadline, emergency, immediate reply required today",
             "school": "Classes, homework, assignments, teachers, professors, grades, clubs, exams",
@@ -418,7 +330,7 @@ class MultiModelRouter:
             criteria[cat] = desc
         return criteria
 
-    async def categorize_item_von_first(
+    async def categorize_item(
         self,
         *,
         source_app: str,
@@ -427,67 +339,62 @@ class MultiModelRouter:
         custom_categories: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Universal Categorizer:
-          1. Uses `Von` (`/v1/systemone`) FIRST when configured & reachable (single forward pass).
-          2. Automatically falls back to the fastest / smallest available model (`role="fast"`, `think=False`).
-          3. Falls back to deterministic keyword & custom-category matching if all models are offline.
+        Universal categoriser:
+          1. Decision model (`/v1/systemone`, one forward pass) when online.
+          2. Chat model (`think=False`, strict JSON).
+          3. Deterministic keyword & custom-category matching (never fails).
         """
-        cats = list(custom_categories) if custom_categories else self.get_active_inbox_categories(source_app)
-        criteria = self._build_von_category_criteria(cats)
+        from .decision_gate import choice, decision_gate
 
-        # Tier 1: Von (/v1/systemone) Zero-Shot Classifier
-        von_ans = await self.von_system_one(
-            state={
+        cats = list(custom_categories) if custom_categories else self.get_active_inbox_categories(source_app)
+        criteria = self._build_category_criteria(cats)
+
+        # Tier 1: decision model
+        answers = await decision_gate.ask(
+            {
                 "service": source_app,
                 "headline": title[:220],
                 "snippet": (snippet or "")[:400],
             },
-            questions={
-                "category": {
-                    "type": "choice",
-                    "instructions": "Select the single best category for this item.",
-                    "criteria": criteria,
-                },
-                "disposition": {
-                    "type": "choice",
-                    "instructions": "Does the user need to read or act on this?",
-                    "criteria": {
+            {
+                "category": choice("Select the single best category for this item.", criteria),
+                "disposition": choice(
+                    "Does the user need to read or act on this?",
+                    {
                         "important": "Direct human message, assignment, grade change, custom category match, or urgent alert",
                         "fyi_noise": "Promotional marketing email, newsletter, social digest, or low-value automated noise",
                     },
-                },
-                "urgency": {
-                    "type": "choice",
-                    "instructions": "Select urgency level.",
-                    "criteria": {
+                ),
+                "urgency": choice(
+                    "Select urgency level.",
+                    {
                         "critical": "Immediate deadline today or emergency",
                         "high": "Actionable message, assignment, or important update",
                         "normal": "Standard informational message",
                         "low": "Newsletter, promo, or background digest",
                     },
-                },
+                ),
             },
         )
-        if isinstance(von_ans, dict):
-            cat_obj = von_ans.get("category") or {}
-            disp_obj = von_ans.get("disposition") or {}
-            urg_obj = von_ans.get("urgency") or {}
-            chosen_cat = str(cat_obj.get("choice") or "").strip() if isinstance(cat_obj, dict) else ""
-            if chosen_cat:
-                disp_choice = str(disp_obj.get("choice") or "important") if isinstance(disp_obj, dict) else "important"
-                is_imp = disp_choice != "fyi_noise" and chosen_cat.lower() != "promo"
-                urg_choice = str(urg_obj.get("choice") or ("high" if is_imp else "low")) if isinstance(urg_obj, dict) else "normal"
-                return {
-                    "category": chosen_cat,
-                    "is_important": is_imp,
-                    "priority": normalize_priority_value(urg_choice),
-                    "engine": "von",
-                }
+        if answers and answers.get("category") is not None and answers["category"].text:
+            raw_cat = answers["category"].text
+            chosen_cat = next((c for c in cats if c.lower() == raw_cat.lower()), None) or raw_cat[:40]
+            disp = answers.get("disposition")
+            disp_choice = disp.text if disp is not None and disp.text else "important"
+            is_imp = disp_choice != "fyi_noise" and chosen_cat.lower() != "promo"
+            urg = answers.get("urgency")
+            urg_choice = urg.text if urg is not None and urg.text else ("high" if is_imp else "low")
+            return {
+                "category": chosen_cat,
+                "is_important": is_imp,
+                "priority": normalize_priority_value(urg_choice),
+                "engine": "lfm3-d1",
+            }
 
-        # Tier 2: Fastest / Smallest Available Model Fallback (`role="fast"`, `think=False`)
+        # Tier 2: chat model (`think=False`)
         cats_pipe = "|".join(cats)
-        fast_model_id = await self.pick_fast_ollama_model()
-        llm_obj = await self.fast_json(
+        chat_model_id = await self.pick_chat_model()
+        llm_obj = await self.chat_json(
             system_prompt=(
                 f"Categorize this item into EXACTLY ONE of [{cats_pipe}]. "
                 "Return strict JSON: "
@@ -505,10 +412,15 @@ class MultiModelRouter:
                 "category": matched_cat,
                 "is_important": imp_v,
                 "priority": normalize_priority_value(llm_obj.get("priority") or ("high" if imp_v else "low")),
-                "engine": f"fast_model:{fast_model_id or 'auto'}",
+                "engine": f"chat:{(chat_model_id or 'auto').split('::')[-1]}",
             }
 
-        # Tier 3: Deterministic Custom-Category + Keyword Heuristic Fallback
+        # Tier 3: deterministic rules
+        return self.heuristic_category(source_app=source_app, title=title, snippet=snippet, cats=cats)
+
+    @staticmethod
+    def heuristic_category(*, source_app: str, title: str, snippet: str, cats: List[str]) -> Dict[str, Any]:
+        """Deterministic custom-category + keyword fallback. Never fails, never calls a model."""
         text_l = f"{source_app} {title} {snippet}".lower()
         for custom_c in cats:
             cl = custom_c.lower()
@@ -546,13 +458,13 @@ class MultiModelRouter:
         """
         Full multi-tier pipeline for newly harvested Inbox notifications.
 
-        Tier 1 — **Decision gate** (`decision_gate`, LFM3 `d1` / TypeSafe System One):
-                 one forward pass assigns tags (multi-label), primary category,
-                 Important vs FYI, priority, clean title, 1-line body summary,
-                 sender, due date, and the content-addressed `dedupe_key`.
-        Tier 2 — `Von` (`/v1/systemone`) if the gate itself is not configured.
-        Tier 3 — Fastest/smallest chat model (`role="fast"`, `think=False`).
-        Tier 4 — Deterministic keyword/registry fallback (never fails).
+        Tier 1 — **Decision model** (`decision_gate`, LFM3 `d1` / System One):
+                 one forward pass assigns tags, primary category, Important vs
+                 FYI, priority and (where the runtime supports typed answers)
+                 clean title, summary, sender and due date.
+        Tier 2 — **Chat model** (`think=False`, strict JSON).
+        Tier 3 — Deterministic keyword/registry fallback (never fails).
+        The content-addressed `dedupe_key` is computed up front either way.
         """
         from .decision_gate import compute_dedupe_key, tag_notification
         from .inbox_tags import inbox_tag_service
@@ -611,50 +523,11 @@ class MultiModelRouter:
                 "engine": engine,
             }
 
-        # ---- Tier 2/3: Von then fast model (pre-gate behaviour)
+        # ---- Tier 2: chat model
         active_cats = self.get_active_inbox_categories(source_app)
-        criteria = self._build_von_category_criteria(active_cats)
-
-        von_category: Optional[str] = None
-        von_important: Optional[bool] = None
-        von_priority: Optional[str] = None
-        von_conf: float = 0.0
-
-        von_ans = await self.von_system_one(
-            state={
-                "service": source_app,
-                "headline": clean_title,
-                "snippet": preview[:400],
-            },
-            questions={
-                "category": {
-                    "type": "choice",
-                    "instructions": "Classify which category this notification belongs to.",
-                    "criteria": criteria,
-                },
-                "disposition": {
-                    "type": "choice",
-                    "instructions": "Does a busy user need to read or act on this notification?",
-                    "criteria": {
-                        "important": "Direct human message, assignment, grade change, calendar change, or urgent alert requiring attention",
-                        "fyi_noise": "Promotional email, newsletter, social digest, marketing, or low-value automated notification",
-                    },
-                },
-            },
-        )
-        if isinstance(von_ans, dict):
-            cat_obj = von_ans.get("category") or {}
-            disp_obj = von_ans.get("disposition") or {}
-            if isinstance(cat_obj, dict) and cat_obj.get("choice"):
-                von_category = str(cat_obj["choice"])
-            if isinstance(disp_obj, dict) and disp_obj.get("choice"):
-                von_conf = float(disp_obj.get("confidence") or 0.0)
-                if von_conf >= settings.von_confidence_threshold:
-                    von_important = disp_obj["choice"] == "important"
-                    von_priority = "high" if von_important else "low"
 
         cats_pipe = "|".join(active_cats)
-        llm_obj = await self.fast_json(
+        llm_obj = await self.chat_json(
             system_prompt=(
                 "You clean and tag incoming notifications for a personal OS Inbox. "
                 "NEVER prefix `title` with the app name (e.g. NEVER start with 'ProtonMail:'). "
@@ -686,11 +559,11 @@ class MultiModelRouter:
 
             raw_llm_cat = str(llm_obj.get("category") or "General").strip()
             matched_cat = next((c for c in active_cats if c.lower() == raw_llm_cat.lower()), None)
-            cat_val = von_category or matched_cat or (raw_llm_cat[:40] if raw_llm_cat else "General")
+            cat_val = matched_cat or (raw_llm_cat[:40] if raw_llm_cat else "General")
             if learned and learned.get("tag"):
                 cat_val = learned["tag"]
-            imp_val = von_important if von_important is not None else bool(llm_obj.get("is_important", cat_val.lower() != "promo"))
-            prio_val = normalize_priority_value(von_priority or llm_obj.get("priority") or ("high" if imp_val else "low"))
+            imp_val = bool(llm_obj.get("is_important", cat_val.lower() != "promo"))
+            prio_val = normalize_priority_value(llm_obj.get("priority") or ("high" if imp_val else "low"))
             tag_list = [cat_val]
             if imp_val and "Urgent" in active_cats and prio_val in ("critical", "high"):
                 tag_list.insert(0, "Urgent")
@@ -704,28 +577,23 @@ class MultiModelRouter:
                 "sender": sender,
                 "dedupe_key": dkey,
                 "confidence": 0.6,
-                "engine": "von+ollama_fast" if von_category else "ollama_fast",
+                "engine": "chat",
             }
 
-        # ---- Tier 4: deterministic fallback
-        fb = await self.categorize_item_von_first(
-            source_app=source_app,
-            title=clean_title,
-            snippet=preview,
-            custom_categories=active_cats,
-        )
-        cat_final = von_category or (learned or {}).get("tag") or fb["category"]
+        # ---- Tier 3: deterministic fallback
+        fb = self.heuristic_category(source_app=source_app, title=clean_title, snippet=preview, cats=active_cats)
+        cat_final = (learned or {}).get("tag") or fb["category"]
         return {
             "title": clean_title,
             "ai_summary": preview or clean_title,
             "category": cat_final,
             "tags": cat_final,
-            "is_important": von_important if von_important is not None else fb["is_important"],
-            "priority": von_priority or fb["priority"],
+            "is_important": fb["is_important"],
+            "priority": fb["priority"],
             "sender": sender,
             "dedupe_key": dkey,
             "confidence": 0.35,
-            "engine": "von" if von_category else fb["engine"],
+            "engine": fb["engine"],
         }
 
     async def extract_tasks_with_ai(
@@ -743,7 +611,7 @@ class MultiModelRouter:
         today_str = today_iso or datetime.now(timezone.utc).date().isoformat()
         seen_keys = {_normalize_task_key(t) for t in existing_titles if t}
 
-        llm_res = await self.fast_json(
+        llm_res = await self.chat_json(
             system_prompt=(
                 f"Today's date is {today_str}. Extract ONLY genuine, incomplete actionable tasks or assignments "
                 "from the provided text. Ignore section headers, background notes, completed items ([x]), "

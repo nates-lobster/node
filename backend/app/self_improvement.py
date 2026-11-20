@@ -354,11 +354,11 @@ class UnifiedInstructionsAndSelfImprovementService:
         updated_md: Optional[str] = None
         used_engine = "deterministic_distiller"
 
-        # Try fast/primary model distillation with strict anti-overfitting instructions
+        # Try chat-model distillation with strict anti-overfitting instructions
         try:
             from .model_router import model_router
 
-            llm_res = await model_router.fast_json(
+            llm_res = await model_router.chat_json(
                 system_prompt=(
                     "You maintain `self_improvement.md` for a multi-agent personal OS assistant.\n"
                     "Analyse user ratings (`good`, `poor`, `frustration`) to diagnose WHY poor replies failed "
