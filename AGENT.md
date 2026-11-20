@@ -160,6 +160,7 @@ All paths relative to repo root.
 | Browser tabs | `backend/app/browser_stream.py` | Playwright managers, ping ingest, AI pass, dedupe |
 | Inbox tags/DSL | `backend/app/inbox_tags.py` | registry, Gmail parser, learning, filters |
 | Inbox harvest/dedupe | `backend/app/inbox_harvest.py` | body extraction, `merge_duplicate_notifications` |
+| Inbox ingest dedupe | `backend/app/inbox_ingest.py` | `absorb_or_none` (every row-creating path must call it first), decision-model check for borderline pairs, cleanup |
 | Grades | `backend/app/grades_service.py`, `grades_control.py` | dashboards, visibility, groups |
 | Learned APIs | `backend/app/api_bridge.py` | api-anything client, cookie import |
 | Tasks sync | `backend/app/task_intelligence.py` | calendar+inbox → tasks |

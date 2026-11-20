@@ -123,14 +123,20 @@ This is the most intricate path in the codebase. Follow it in order:
 Playwright tab detects unread
    → POST /api/v1/ping  (or internal ingest)
    → browser_stream: normalize, scrub UI artifacts (scrub_notification_artifacts)
-   → Notification row created (category="General", ai_processed=False)
+   → inbox_ingest.absorb_or_none()                      [no model needed]
+        → token set of subject+preview minus sender/app names, order-free
+        → ≥0.8 containment with a row in the window → fold into it, no new row
+          (read rows stay read; counter pings update one row per app)
+   → else Notification row created (category="General", ai_processed=False)
    → _schedule_ai_notification_processing(ids)          [detached]
         → model_router.process_incoming_notification()  [gate → fallback]
         → write tags_csv / summary / importance
             ⚠ guarded by tag_corrected_by_user — user wins
-   → merge_duplicate_notifications(since_ids=[...])
-        → dedupe_key = hash(source, normalized sender, subject tokens, body fp)
-        → keep oldest, UNION tags, bump merged_count, record dedupe_sources
+   → inbox_ingest.confirm_borderline_with_gate(ids)
+        → 0.5–0.8 look-alikes: decision model "same message?" ≥0.85 → merge
+   → merge_duplicate_notifications(since_ids=[...])     [exact dedupe_key]
+        → keep oldest, bump merged_count, record dedupe_sources
+        → tags are NOT unioned: user correction wins, else re-tag the survivor
    → Inbox UI reads via GET /api/v1/notifications (and the tag DSL via /inbox/query)
 ```
 
