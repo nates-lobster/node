@@ -401,12 +401,27 @@
     setTimeout(render, ms || 400);
   }
 
+  // Sites known to load their data from background workers, which a pasted
+  // hook can't see (confirmed with captures of Outlook and Teams, 0.15.2).
+  const WORKER_SITES = /(^|\.)(outlook\.(cloud\.microsoft|office\.com|office365\.com|live\.com)|teams\.(cloud\.)?microsoft(\.com)?)$/i;
+  function workerNotice() {
+    if (!WORKER_SITES.test(location.hostname)) return;
+    setMsg(
+      h("b", { text: "Heads-up: " }),
+      "this site loads mail/chats inside background workers, which the console can't see, so the inbox list and chat calls won't appear here. Use ",
+      h("b", { text: "tools/api-recorder/record.py" }),
+      " for those. ",
+      h("button", { onclick: () => setMsg(), text: "ok" }),
+    );
+  }
+
   function show() {
     if (!host.isConnected) (document.body || document.documentElement).append(host);
     box.classList.remove("min");
     render();
   }
   show();
+  workerNotice();
 
   window.nodeRec = {
     __alive: true,
