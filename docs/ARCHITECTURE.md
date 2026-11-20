@@ -66,21 +66,32 @@ service module so it is testable without HTTP.
 
 Three layers, each with a fallback.
 
+Node uses exactly **two model roles**: the **decision model** (typed answers,
+no generation) and the **chat model** (everything that writes text). Both are
+normally served by one Ollama; the routing lives in `ai_providers.json` as
+`{chat_model, decision_model}` (legacy `primary/fast/briefing` keys migrate to
+`chat_model`). `ai_providers.is_decision_model()` keeps d1 out of chat routing.
+
 ### 3.1 Decision gate (`decision_gate.py`)
-A small, fast, **typed** model (Liquid d1-2B). It does not chat. It answers
+A small, fast, **typed** model (LFM3 d1). It does not chat. It answers
 questions and returns calibrated confidence:
 
 - `tag_notification(...)` → which tags apply (primary classification).
 - `plan_tools(...)` → which tool families a chat turn needs + extracted slots
   (title, date, time, duration).
 
+The gate probes the live server and records `capabilities` (`noul`, `choice`,
+`multiple`, `text`, `date`). Ollama/llama.cpp builds only do noul/choice, so
+callers check `await decision_gate.ensure_ready()` + `supports()` and degrade
+to one noul question per tag/group, skipping text/date reads.
+
 If the gate is offline, callers get `None` and **must** fall back deterministically.
 `plan_tools` returning `None` means "no opinion" — the caller attaches a safe
 default subset, not all 36 tools.
 
 ### 3.2 Router (`model_router.py`)
-Chooses a model per task, in priority order: explicit provider → local Ollama →
-remote Ollama → cloud. Handles think/tools retries and notification processing
+Picks the chat model (routing pref → loaded-in-RAM → smallest) and runs the
+notification chain decision model → chat model (`chat_json`) → rules. Handles think/tools retries and notification processing
 (`process_incoming_notification`), which returns a normalized dict:
 `{title, ai_summary, category, tags, is_important, priority, sender, dedupe_key,
 confidence, engine}`.

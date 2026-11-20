@@ -256,7 +256,12 @@ failing in mid-November.
 
 ### 7.7 External API contracts (verified, don't guess)
 - **Liquid d1**: `POST {base}/v1/systemone` with `state` + `questions` (TypeSafe
-  System One). Hosted model alias is `d1.2`. Docs: `docs.liquid.ai/api/guides/decisions`.
+  System One). Hosted model alias is `d1.2`; Ollama serves it at the same path
+  after `ollama pull d1`. **llama.cpp/Ollama answer only noul/choice/score** —
+  multi-select and text/date need Transformers or MLX, hence the capability
+  probe. Docs: `docs.liquid.ai/api/guides/decisions`.
+- **Two model roles only:** decision + chat. Don't reintroduce a "fast" role;
+  use `model_router.chat_json` for small JSON jobs.
 - **api-anything REST**: `POST /v1/call/{site}/{op}` with body
   `{"args": {...}}` — arguments **nest under `args`**. OpenAPI at `/openapi.json`,
   auth `Authorization: Bearer $API_ANYTHING_TOKEN`. Needs Node ≥ 22.13.

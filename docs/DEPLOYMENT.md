@@ -214,8 +214,11 @@ That is throwaway. A real deployment must set its own.
 | `AUTH_GUARD_TOKEN_PATH` | where the `extension` guard token is stored (the other scopes go in `guard_tokens.json` beside it) |
 | `TZ` | authoritative local time (calendar, cron, weekdays) |
 | `DATABASE_URL` | override the SQLite path |
-| `OLLAMA_BASE_URL` / `OLLAMA_MODEL` | local model (`auto` = discover) |
-| `DECISION_BASE_URL`, `DECISION_API_KEY` | Liquid d1-2B gate |
+| `OLLAMA_BASE_URL` | the Ollama server serving both models |
+| `CHAT_MODEL` | chat model (empty/`auto` = discover; `OLLAMA_MODEL` still honoured) |
+| `DECISION_MODEL` | decision model tag (`auto` = the `d1` tag Ollama has) |
+| `DECISION_BASE_URL`, `DECISION_API_KEY` | only for a separate System One server (default: Ollama's `/v1/systemone`) |
+| `DECISION_TIMEOUT_SECONDS` | default 12; covers cold-loading d1 |
 | `API_ANYTHING_TOKEN` | shared secret for the api-anything bridge |
 | `SEED_DEMO_DATA` | **must stay `false`** |
 | `TAILSCALE_SOCK_DIR` | optional tailscaled LocalAPI mount |
