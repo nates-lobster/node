@@ -5,6 +5,16 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.13.1 — 2026-11-19
+
+### Changed
+- **Faster tagging on Ollama.** Instead of one yes/no question per tag, d1
+  now picks the main tag in a single `choice` question and double-checks only
+  the 3–4 runners-up for extra tags. With 20 tags that's about 5 questions
+  instead of 20, and the result is the same or better.
+
+---
+
 ## 0.13.0 — 2026-11-19
 
 Two AI models instead of "model vs fast model", and Von is gone.

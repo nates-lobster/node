@@ -1,4 +1,4 @@
-# Node (v0.13.0)
+# Node (v0.13.1)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -38,8 +38,9 @@ data.
   writes text. Both are picked in **Settings → AI Models**.
 - **Von is removed.** The decision model runs on the same Ollama server, so no
   extra container is needed.
-- **Graceful on Ollama/llama.cpp:** where the runtime can't do multi-select or
-  typed answers, Node asks one yes/no per tag instead of failing.
+- **Works on Ollama/llama.cpp:** where the runtime can't do multi-select or
+  typed answers, d1 picks the main tag in one question and double-checks only
+  the likely extra tags (0.13.1).
 - **Auto-sort respects your corrections,** and CI now runs the tests on every PR.
 
 ---
