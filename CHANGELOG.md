@@ -5,6 +5,16 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.16.1 — 2026-11-20
+
+### Improved
+- Outlook now requests 50 inbox conversations per poll, matching the page size
+  seen in the user's OWA capture (up from 25). Added a capability note covering
+  the existing session-based access, what it imports, and the safe expansion
+  path for folders, attachments and calendar.
+
+---
+
 ## 0.16.0 — 2026-11-20
 
 The first API connectors, built from the user's `record.py` captures.
