@@ -3638,6 +3638,7 @@ def test_v016_outlook_connector_end_to_end(client: TestClient, tmp_path):
             payload = _json.loads(unquote(request.headers["x-owa-urlpostdata"]))
             folder = payload["Body"]["ParentFolderId"]["BaseFolderId"]
             assert folder == {"__type": "DistinguishedFolderId:#Exchange", "Id": "inbox"}
+            assert payload["Body"]["Paging"]["MaxEntriesReturned"] == 50
             return httpx.Response(200, json={"Body": {"Conversations": convs["list"], "ResponseClass": "Success"}})
         if action == "GetConversationItems":
             payload = _json.loads(request.content)

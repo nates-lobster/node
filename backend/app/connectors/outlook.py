@@ -192,7 +192,8 @@ class OutlookMailConnector(Connector):
     key = "outlook-mail"
     label = "Outlook mail"
     auth_target = "outlook"
-    page_size = 25
+    # The user's OWA capture paged at roughly 50 conversations per call.
+    page_size = 50
     max_bodies_per_run = 8
 
     def __init__(self, **kw: Any) -> None:
