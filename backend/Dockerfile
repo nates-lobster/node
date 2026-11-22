@@ -13,7 +13,7 @@ WORKDIR /app
 # Install Brave Browser (amd64 Debian) for zero-Google server-side app streaming + Shields,
 # plus Playwright system libs as clean fallback.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates gnupg iproute2 \
+    && apt-get install -y --no-install-recommends curl ca-certificates gnupg iproute2 libatomic1 \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
          curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg \
          && echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg arch=amd64] https://brave-browser-apt-release.s3.brave.com/ stable main" > /etc/apt/sources.list.d/brave-browser-release.list \
