@@ -5,6 +5,15 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.16.2 — 2026-11-20
+
+### Fixed
+- Docker build on Debian slim failed while starting Playwright's Node driver:
+  `libatomic.so.1` was missing before `playwright install --with-deps` could run.
+  Install Debian's `libatomic1` before invoking Playwright.
+
+---
+
 ## 0.16.1 — 2026-11-20
 
 ### Improved
