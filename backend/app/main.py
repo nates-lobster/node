@@ -1614,6 +1614,27 @@ def list_tasks(
         stmt = stmt.where(Task.completed == False)  # noqa: E712
     if category:
         stmt = stmt.where(Task.category == category)
+    # Keep the active task list clear of stale deadlines. A task overdue by a
+    # full week is deleted on the next list refresh; completed tasks are kept.
+    cutoff = date.today() - timedelta(days=7)
+    stale = list(session.exec(select(Task).where(Task.completed == False)).all())  # noqa: E712
+    removed = 0
+    for task in stale:
+        raw_due = str(task.due_date or "").strip()
+        try:
+            due = date.fromisoformat(raw_due[:10])
+        except (TypeError, ValueError):
+            continue
+        if due <= cutoff:
+            session.delete(task)
+            removed += 1
+    if removed:
+        session.commit()
+        stmt = select(Task)
+        if not include_completed:
+            stmt = stmt.where(Task.completed == False)  # noqa: E712
+        if category:
+            stmt = stmt.where(Task.category == category)
     rows = list(session.exec(stmt).all())
     return [_task_with_estimate(t) for t in sort_tasks_for_display(rows)]
 

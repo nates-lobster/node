@@ -15,7 +15,7 @@ const MODES = ["dashboard", "custom", "wallpaper"];
 const $ = (id) => document.getElementById(id);
 
 let baseUrl = DEFAULT_BASE;
-let mode = "custom";
+let mode = "dashboard";
 
 let guardToken = "";
 

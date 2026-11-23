@@ -3950,3 +3950,28 @@ def test_v016_mint_captures_a_signed_request_from_a_headless_page(client: TestCl
     assert worker_auth.url == base + "/api/chatsvc/amer/v1/users/ME/conversations/x", "SharedWorker requests are seen"
     assert err.kind == "network" and "no signed request" in str(err)
     assert not any(u.startswith(base) for u in open_pages), "the mint closes its page"
+
+
+def test_v0162_tasks_overdue_for_a_week_are_pruned_on_refresh(client: TestClient):
+    from datetime import date as _date, timedelta as _td
+
+    suffix = _uniq()
+    expired = client.post(
+        "/api/v1/tasks",
+        json={"title": "Expired task " + suffix, "due_date": (_date.today() - _td(days=7)).isoformat()},
+    ).json()
+    recent = client.post(
+        "/api/v1/tasks",
+        json={"title": "Recent task " + suffix, "due_date": (_date.today() - _td(days=6)).isoformat()},
+    ).json()
+    completed = client.post(
+        "/api/v1/tasks",
+        json={"title": "Completed expired task " + suffix, "due_date": (_date.today() - _td(days=20)).isoformat()},
+    ).json()
+    client.patch(f"/api/v1/tasks/{completed['id']}", json={"completed": True})
+
+    rows = client.get("/api/v1/tasks").json()
+    ids = {row["id"] for row in rows}
+    assert expired["id"] not in ids
+    assert recent["id"] in ids
+    assert completed["id"] in ids
