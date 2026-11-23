@@ -1133,7 +1133,7 @@ class FocusGuardService:
         overlay_js = self._overlay_ui_js()
         match_lines = "\n".join(f"// @match        {m}" for m in self._match_patterns())
         return f"""// ==UserScript==
-// @name         Node — Universal Social & Media Focus Guard (v10.0)
+// @name         Node — Universal Social & Media Focus Guard (v10.1)
 // @namespace    http://node.local/
 // @version      10.0
 // @description  Guards YouTube, Instagram, TikTok, Facebook, X/Twitter, Reddit, Twitch, Netflix & custom distraction domains with schedule-aware AI accountability.
@@ -1216,7 +1216,7 @@ class FocusGuardService:
         manifest = {
             "manifest_version": 3,
             "name": "Node — Universal Social & Media Focus Guard",
-            "version": "10.0.0",
+            "version": "10.1.0",
             "description": "Monitors YouTube, Instagram, TikTok, Facebook, X/Twitter, Reddit, Twitch, Netflix & custom domains with AI accountability and tab force-close.",
             "permissions": ["storage", "tabs"],
             "host_permissions": [

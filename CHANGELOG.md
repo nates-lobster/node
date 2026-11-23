@@ -13,6 +13,9 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
   non-trivial viewing justifications. The deterministic heuristic remains the
   fallback when d1 is unavailable. Existing hard-block decisions are never
   downgraded by d1.
+- Bump the generated Focus Guard extension to 10.1.0, so the updated package is
+  distinguishable from an earlier installed copy. It remains a separate package
+  from the New Tab/cookie-sync extension; re-download it in Settings → Focus & Browser.
 - The Apps window labels API adapters and their health separately from legacy
   browser monitoring. Installing supported Outlook/Teams apps immediately runs
   stable API connectors; it no longer opens a streamed browser window by default.

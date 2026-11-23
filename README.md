@@ -33,9 +33,10 @@ data.
 YouTube Focus Guard now uses the configured **d1 decision model** to assess
 whether a video and a viewing justification relate to active tasks, with
 schedule context. Deterministic rules remain the offline fallback and cannot
-soften an exhausted hard cap. In Apps, supported Outlook/Teams installs now
-immediately run their stable API connectors; other browser monitoring is called
-out as a fallback. The [product redesign roadmap](docs/PRODUCT_REDESIGN_ROADMAP.md)
+soften an exhausted hard cap. Its separate Focus Guard extension package is now
+v10.1.0; re-download it from Settings → Focus & Browser. In Apps, supported
+Outlook/Teams installs now immediately run their stable API connectors; other
+browser monitoring is called out as a fallback. The [product redesign roadmap](docs/PRODUCT_REDESIGN_ROADMAP.md)
 tracks the larger API-first Apps, desktop, Grades, reset and MCP work.
 
 ---
