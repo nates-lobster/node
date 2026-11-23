@@ -5,6 +5,23 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.16.4 — 2026-11-23
+
+### Improved
+- YouTube Focus Guard now asks the configured d1 decision gate to classify
+  watched video relevance against active tasks and schedule, and to assess
+  non-trivial viewing justifications. The deterministic heuristic remains the
+  fallback when d1 is unavailable. Existing hard-block decisions are never
+  downgraded by d1.
+- The Apps window labels API adapters and their health separately from legacy
+  browser monitoring. Installing supported Outlook/Teams apps immediately runs
+  stable API connectors; it no longer opens a streamed browser window by default.
+  The fallback is explicitly labeled.
+- `docs/PRODUCT_REDESIGN_ROADMAP.md` records the owner's API-first, MCP-accessible,
+  fully customizable product direction and the staged migration plan.
+
+---
+
 ## 0.16.3 — 2026-11-20
 
 ### Improved

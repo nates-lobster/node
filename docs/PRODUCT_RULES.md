@@ -16,6 +16,19 @@ to contradict one, surface the conflict instead of silently picking a side.
   zip) with a documented `window.NodeOS` SDK. See `docs/APPS_AND_WIDGETS_SDK.md`.
 - LMS setup lives in **Grades / App Library**. Never call
   `openNewAppModal('PowerSchool')` from the shell.
+- **API-first connections:** official API/library → free community protocol →
+  app-owned web API with the user's session → bounded server-side headless
+  browser/interception. Visible server-streamed browser windows are not the
+  normal app connection path. Never pay for APIs or run an LLM agent to discover
+  an endpoint at runtime.
+- Installing an app and connecting its data are separate states. A successful
+  cookie copy does not mean the app is connected; expose a connection test,
+  method, status and actionable error.
+- The owner can customize which apps/data/views are active. No defaults may
+  silently preinstall apps or force a module into a user's display.
+- Every meaningful action must be callable through a typed Node service layer
+  used by the UI, internal AI tools and eventually authenticated MCP; sensitive
+  writes must be scoped, auditable and explicitly confirmed.
 
 ## Inbox
 
@@ -34,8 +47,10 @@ to contradict one, surface the conflict instead of silently picking a side.
 - **Gmail-style operators** are first-class for both the user and the AI:
   `is:unread`, `is:important`, `from:`, `tag:`, `subject:`, `newer_than:7d`,
   `-tag:promo`, `OR`.
-- The user must be able to **ditch the original mail client**: the reading pane
-  pulls the full body from the live tab.
+- The user must be able to **ditch the original mail client**: connectors fetch
+  full message bodies through provider APIs/protocols whenever possible. A
+  signed-in, headless browser or live-tab body fetch is the last-resort fallback,
+  never the default data path.
 
 ## AI
 
@@ -95,6 +110,11 @@ to contradict one, surface the conflict instead of silently picking a side.
 
 - A Brave/Chromium **new-tab override** with switchable modes: full dashboard,
   wallpaper-only lock, and a custom minimal page (clock, to-do, urgent items).
+- Add separate Work and Display desktop profiles, each independently laid out;
+  Display mode can hide taskbar/chrome. Keep the tiled window manager; do not
+  replace it with floating Mac-style windows.
+- Visual direction is user-customizable translucent glass, pills and squircle
+  controls inspired by macOS, while retaining Node's dark slate/emerald identity.
 - **Zero-Google Brave** is the streaming engine.
 - Prefer **learned APIs** (api-anything) over browser-window streaming where
   reliable; the extension may read cookies from the user's local session so

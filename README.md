@@ -1,4 +1,4 @@
-# Node (v0.16.3)
+# Node (v0.16.4)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -25,6 +25,18 @@ docker compose up -d --build         # http://<server>:8080
 writes lives in `data/` (SQLite DB, uploads, browser sessions, credentials). It is
 gitignored and host-mounted, so `git pull` updates the code and never touches your
 data.
+
+---
+
+## What's New in v0.16.4
+
+YouTube Focus Guard now uses the configured **d1 decision model** to assess
+whether a video and a viewing justification relate to active tasks, with
+schedule context. Deterministic rules remain the offline fallback and cannot
+soften an exhausted hard cap. In Apps, supported Outlook/Teams installs now
+immediately run their stable API connectors; other browser monitoring is called
+out as a fallback. The [product redesign roadmap](docs/PRODUCT_REDESIGN_ROADMAP.md)
+tracks the larger API-first Apps, desktop, Grades, reset and MCP work.
 
 ---
 
