@@ -13,11 +13,11 @@ import zipfile
 from sqlmodel import Session, select
 
 from .config import settings
+from .decision_gate import choice, decision_gate
 from .cron_scheduler import cron_scheduler
 from .database import engine
 from .memory_store import memory_store
 from .models import LongTermGoal, Notification, Task
-from .ollama_client import ollama_client
 
 logger = logging.getLogger("node.focus_guard")
 
@@ -315,8 +315,8 @@ class FocusGuardService:
         duration_seconds: int,
     ) -> Dict[str, Any]:
         """
-        Runs during playback (e.g. during the first 10 minutes of a long video or while a
-        short video plays) so Qwen (`qwen3.5:2b`) pre-evaluates the video before the prompt fires.
+        Runs during playback so D1 pre-evaluates the video's relation to active
+        tasks before the accountability prompt fires; uses deterministic fallback offline.
         """
         with Session(engine) as session:
             state = self._load()
@@ -334,47 +334,56 @@ class FocusGuardService:
             )
 
         try:
-            st_ollama = await ollama_client.check_status()
-            if st_ollama.reachable and st_ollama.model_installed:
+            # D1 is the policy decision model: compare video metadata with actual
+            # open tasks. Fall back to the deterministic heuristic if it is offline.
+            if await decision_gate.ensure_ready() and decision_gate.supports("choice"):
                 sched = workload.get("schedule_budget") or {}
-                prompt = (
-                    "Analyze this YouTube video the user is currently watching and return ONLY JSON:\n"
-                    '{"classification": "coursework_aligned|educational_general|entertainment_distraction", '
-                    '"recommended_mode": "hard_block|require_reasoning|allow_aligned", "summary": "1 concise sentence"}\n'
-                    f"Video Title: {video_title}\n"
-                    f"Channel: {channel}\n"
-                    f"Duration: {round(duration_seconds / 60.0, 1)} min\n"
-                    f"Description: {description_snippet[:400]}\n"
-                    f"Open Tasks: {json.dumps(workload.get('task_titles', [])[:6])}\n"
-                    f"Schedule before {sched.get('bedtime_label', '10:00 PM')} bedtime: "
-                    f"{sched.get('free_minutes_until_bedtime', 0)}m free, "
-                    f"{sched.get('due_tonight_minutes', 0)}m homework due tonight, "
-                    f"YouTube watched today: {round(total_m, 1)}m (hard cap {hard_cap}m)."
+                answers = await decision_gate.ask(
+                    {
+                        "video_title": video_title,
+                        "channel": channel,
+                        "description": description_snippet[:400],
+                        "duration_minutes": round(duration_seconds / 60.0, 1),
+                        "active_tasks": workload.get("task_titles", [])[:8],
+                        "schedule": {
+                            "free_minutes_until_bedtime": sched.get("free_minutes_until_bedtime", 0),
+                            "due_tonight_minutes": sched.get("due_tonight_minutes", 0),
+                            "youtube_watched_today_minutes": round(total_m, 1),
+                            "youtube_hard_cap_minutes": hard_cap,
+                        },
+                    },
+                    {
+                        "classification": choice(
+                            "Classify this video's likely value for the user's active tasks. Choose coursework_aligned only when the topic directly matches an active course/task; educational_general is useful learning but not task-specific; entertainment_distraction is mainly leisure or unrelated.",
+                            {
+                                "coursework_aligned": "Directly relevant to one or more active coursework tasks.",
+                                "educational_general": "Educational, but not clearly tied to active work.",
+                                "entertainment_distraction": "Entertainment or unrelated to active work.",
+                            },
+                        ),
+                        "recommended_mode": choice(
+                            "Given relevance, workload, schedule slack and today's usage, select the least restrictive safe policy. A hard cap or urgent workload with no slack must not be softened.",
+                            {
+                                "hard_block": "Force close now: hard cap exhausted or urgent work and no available slack.",
+                                "require_reasoning": "Ask the user for a concrete reason before continuing.",
+                                "allow_aligned": "Allow because this directly supports active work and no hard cap is reached.",
+                            },
+                        ),
+                    },
+                    timeout=settings.decision_timeout_seconds,
                 )
-                res = await ollama_client.chat_json_or_text(
-                    system_prompt=(
-                        "You are Node's Focus Guard AI. Use 'hard_block' if the user already accumulated high YouTube time "
-                        "or has urgent due-tonight work with no slack; 'require_reasoning' if they should justify watching "
-                        "instead of working; 'allow_aligned' ONLY if the video directly helps an active task."
-                    ),
-                    user_prompt=prompt,
-                    enable_thinking=False,
-                )
-                raw = (res.get("content") or "").strip()
-                s_idx, e_idx = raw.find("{"), raw.rfind("}")
-                if s_idx != -1 and e_idx != -1:
-                    parsed = json.loads(raw[s_idx : e_idx + 1])
-                    if parsed.get("classification") in ("coursework_aligned", "educational_general", "entertainment_distraction"):
-                        baseline["classification"] = parsed["classification"]
-                    if parsed.get("recommended_mode") in ("hard_block", "require_reasoning", "allow_aligned"):
-                        # Never downgrade a hard_block when past bedtime or way over hard cap
+                if answers:
+                    classification = (answers.get("classification").text if answers.get("classification") else "").lower()
+                    mode = (answers.get("recommended_mode").text if answers.get("recommended_mode") else "").lower()
+                    if classification in ("coursework_aligned", "educational_general", "entertainment_distraction"):
+                        baseline["classification"] = classification
+                    if mode in ("hard_block", "require_reasoning", "allow_aligned"):
                         if baseline["recommended_mode"] != "hard_block":
-                            baseline["recommended_mode"] = parsed["recommended_mode"]
-                    if parsed.get("summary"):
-                        baseline["summary"] = str(parsed["summary"]).strip()[:260]
-                    baseline["analyzed_by"] = settings.effective_chat_model
+                            baseline["recommended_mode"] = mode
+                    baseline["analyzed_by"] = decision_gate.model
         except Exception as exc:
-            logger.debug("Background video AI analysis fallback: %s", exc)
+            logger.debug("D1 video analysis fallback: %s", exc)
+
 
         state = self._load()
         state.setdefault("video_analyses", {})[video_id] = baseline
@@ -751,19 +760,26 @@ class FocusGuardService:
         analysis = sess.get("ai_video_analysis") or {}
         total_today_m = round((state.get("total_youtube_seconds_today") or 0) / 60.0, 1)
 
-        # Deterministic anti-excuse gate first
+        # Deterministic policy / anti-excuse gates first. A hard cap or hard-block
+        # video assessment is never overrideable through an API call or model answer.
         approved = False
         ai_explanation = ""
         word_count = len(clean_reason.split())
         matches_weak = any(re.match(pat, clean_reason, re.IGNORECASE) for pat in WEAK_EXCUSE_PATTERNS)
+        hard_block = (
+            total_today_m >= int(state.get("hard_limit_minutes") or 45)
+            or analysis.get("recommended_mode") == "hard_block"
+        )
 
-        if len(clean_reason) < 18 or word_count < 4 or matches_weak:
+        if hard_block:
+            ai_explanation = "The Focus Guard hard limit or policy block is active; no viewing pass can override it."
+        elif len(clean_reason) < 18 or word_count < 4 or matches_weak:
             approved = False
             ai_explanation = (
                 "Reasoning is too brief or generic to justify delaying your work. Force-closing YouTube so you stay on schedule."
             )
         else:
-            # Baseline rubric check (used directly if Ollama is offline, or combined with Qwen)
+            # Deterministic fallback rubric; D1 may refine non-hard-block decisions below.
             low_r = clean_reason.lower()
             study_signals = any(
                 w in low_r
@@ -797,39 +813,48 @@ class FocusGuardService:
                     "bedtime approaching, that reason isn't strong enough to skip working. Closing tab."
                 )
 
-            # Consult local Qwen (`qwen3.5:2b`) if online!
+            # D1 decides whether the claimed reason is genuinely relevant to active
+            # work. The deterministic checks above remain the fallback and hard
+            # cap / obvious entertainment mismatch cannot be overridden.
             try:
-                st_ollama = await ollama_client.check_status()
-                if st_ollama.reachable and st_ollama.model_installed:
-                    prompt = (
-                        "Decide if the user's typed reason for watching this YouTube video instead of working is genuinely sufficient.\n"
-                        'Return ONLY JSON: {"approved": true|false, "explanation": "1 concise direct sentence"}\n'
-                        f"Video: {video_title} ({channel})\n"
-                        f"AI Pre-Analysis of Video: {json.dumps(analysis)}\n"
-                        f"Open Tasks: {json.dumps(workload.get('task_titles', [])[:6])}\n"
-                        f"Schedule: {sched.get('free_minutes_until_bedtime', 0)}m until {sched.get('bedtime_label', '10:00 PM')} bedtime, "
-                        f"{sched.get('due_tonight_minutes', 0)}m due tonight, YouTube watched today={total_today_m}m.\n"
-                        f"User's Typed Reasoning: {json.dumps(clean_reason)}"
+                if await decision_gate.ensure_ready() and decision_gate.supports("choice"):
+                    answers = await decision_gate.ask(
+                        {
+                            "video": {
+                                "title": video_title,
+                                "channel": channel,
+                                "classification": analysis.get("classification"),
+                                "summary": analysis.get("summary"),
+                            },
+                            "active_tasks": workload.get("task_titles", [])[:8],
+                            "schedule": {
+                                "free_minutes_until_bedtime": sched.get("free_minutes_until_bedtime", 0),
+                                "due_tonight_minutes": sched.get("due_tonight_minutes", 0),
+                                "youtube_watched_today_minutes": round(total_today_m, 1),
+                                "youtube_hard_cap_minutes": int(state.get("hard_limit_minutes") or 45),
+                            },
+                            "user_reason": clean_reason,
+                        },
+                        {
+                            "decision": choice(
+                                "Approve only if the user gives a concrete reason grounded in an active task/course and this video is actually relevant, or if the schedule allows a bounded rest break. Reject generic excuses and claims contradicted by the video's classification.",
+                                {
+                                    "approve": "The reason is specific, supported by task/video context or allowed rest time.",
+                                    "reject": "The reason is vague, unrelated, contradicted by the video, or workload makes this unsafe.",
+                                },
+                            )
+                        },
+                        timeout=settings.decision_timeout_seconds,
                     )
-                    res = await ollama_client.chat_json_or_text(
-                        system_prompt=(
-                            "You are a strict but fair accountability coach. Reject flimsy excuses, procrastination, "
-                            "or claiming an entertainment video is for studying. Approve ONLY genuine coursework need "
-                            "that matches the video OR bounded rest when due-tonight tasks are clear and bedtime slack exists."
-                        ),
-                        user_prompt=prompt,
-                        enable_thinking=False,
-                    )
-                    raw = (res.get("content") or "").strip()
-                    s_idx, e_idx = raw.find("{"), raw.rfind("}")
-                    if s_idx != -1 and e_idx != -1:
-                        parsed = json.loads(raw[s_idx : e_idx + 1])
-                        if isinstance(parsed.get("approved"), bool):
-                            approved = parsed["approved"]
-                        if parsed.get("explanation"):
-                            ai_explanation = str(parsed["explanation"]).strip()[:280]
+                    decision = (answers.get("decision").text if answers and answers.get("decision") else "").lower()
+                    if decision == "approve" and not (study_signals and analysis.get("classification") == "entertainment_distraction"):
+                        approved = True
+                        ai_explanation = "D1 approved this specific reason against the video and active-task context."
+                    elif decision == "reject":
+                        approved = False
+                        ai_explanation = "D1 found the reason unrelated to active work or inconsistent with the available time."
             except Exception as exc:
-                logger.debug("Ollama justification check fallback: %s", exc)
+                logger.debug("D1 justification check fallback: %s", exc)
 
         if approved:
             grant_m = int(state.get("study_allowance_minutes") or 20)
