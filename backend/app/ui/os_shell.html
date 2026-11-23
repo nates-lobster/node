@@ -2200,10 +2200,10 @@
                   <div class="text-sm font-semibold text-ink">Connect Your LMS Portal</div>
                   <p class="text-muted-ink max-w-lg mx-auto">Add PowerSchool, Schoology, Canvas LMS, or Google Classroom below, sign in once inside the server stream window, and click <strong>Scan All Portals</strong>. Node pulls courses, individual assignments, and upcoming tasks — and works alongside `.ics` calendar feeds in Calendar.</p>
                   <div class="flex flex-wrap items-center justify-center gap-2 pt-1">
-                    <button type="button" @click="installCatalogApp({ template_id: 'powerschool', name: 'PowerSchool' }, true)" class="rounded-xl badge-accent px-3 py-1.5 font-semibold">+ PowerSchool</button>
-                    <button type="button" @click="installCatalogApp({ template_id: 'schoology', name: 'Schoology' }, true)" class="rounded-xl badge-accent px-3 py-1.5 font-semibold">+ Schoology</button>
-                    <button type="button" @click="installCatalogApp({ template_id: 'canvas', name: 'Canvas LMS' }, true)" class="rounded-xl badge-accent px-3 py-1.5 font-semibold">+ Canvas LMS</button>
-                    <button type="button" @click="installCatalogApp({ template_id: 'google-classroom', name: 'Google Classroom' }, true)" class="rounded-xl studio-card px-3 py-1.5 text-ink hover:text-accent">+ Google Classroom</button>
+                    <button type="button" @click="installCatalogApp({ template_id: 'powerschool', name: 'PowerSchool' }, false)" class="rounded-xl badge-accent px-3 py-1.5 font-semibold">+ PowerSchool</button>
+                    <button type="button" @click="installCatalogApp({ template_id: 'schoology', name: 'Schoology' }, false)" class="rounded-xl badge-accent px-3 py-1.5 font-semibold">+ Schoology</button>
+                    <button type="button" @click="installCatalogApp({ template_id: 'canvas', name: 'Canvas LMS' }, false)" class="rounded-xl badge-accent px-3 py-1.5 font-semibold">+ Canvas LMS</button>
+                    <button type="button" @click="installCatalogApp({ template_id: 'google-classroom', name: 'Google Classroom' }, false)" class="rounded-xl studio-card px-3 py-1.5 text-ink hover:text-accent">+ Google Classroom</button>
                     <button type="button" @click="openWindow('calendar')" class="rounded-xl studio-card px-3 py-1.5 text-muted-ink hover:text-ink">+ Schoology / Canvas .ics Feed</button>
                   </div>
                 </div>
@@ -2394,8 +2394,8 @@
             <section x-show="win.view === 'apps'" class="space-y-4">
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div class="flex items-center gap-2">
-                  <h2 class="text-base font-semibold text-ink">App Library &amp; Server Web Monitors</h2>
-                  <span class="text-xs text-subtle-ink">Fresh installs start empty • 1-click install popular apps or custom URLs</span>
+                  <h2 class="text-base font-semibold text-ink">Apps &amp; Connections</h2>
+                  <span class="text-xs text-subtle-ink">Install the sources you use. Node tries an available API connector first; browser monitoring is a fallback.</span>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 text-xs">
                   <button type="button" @click="showAppLibraryDrawer = !showAppLibraryDrawer" class="rounded-xl studio-subcard px-3 py-1.5 font-semibold text-accent" x-text="showAppLibraryDrawer ? 'Hide App Library' : 'Browse App Library'"></button>
@@ -2427,11 +2427,18 @@
                             <span class="shrink-0 rounded-full border px-2 py-0.5 text-[10.5px] font-medium" :class="runtimeBadgeClass(app.runtime_status)" x-text="app.runtime_label"></span>
                           </div>
                           <div x-show="app.calibration_notes" class="text-[11px] text-accent truncate" x-text="app.calibration_notes || ''"></div>
+                          <template x-for="conn in appConnectors(app)" :key="'api-' + conn.key">
+                            <div class="flex items-center justify-between gap-2 rounded-lg bg-white/[0.035] px-2.5 py-1.5 text-[10.5px]">
+                              <span class="text-muted-ink"><span class="font-semibold text-ink" x-text="conn.label"></span> · API <span x-text="connectorHealthLabel(conn)"></span></span>
+                              <button type="button" @click="runConnector(conn.key)" :disabled="connectorBusy === conn.key" class="rounded-full badge-accent px-2 py-0.5 font-semibold" x-text="connectorBusy === conn.key ? 'Syncing…' : 'Sync now'"></button>
+                            </div>
+                          </template>
+                          <div x-show="appConnectors(app).length === 0" class="text-[10.5px] text-subtle-ink">No direct API adapter yet. The legacy browser monitor is available manually, but does not mean this app is API-connected.</div>
                         </div>
 
                         <div class="pt-2.5 border-t border-studio flex flex-wrap items-center justify-between gap-2 text-xs">
                           <div class="flex items-center gap-1.5">
-                            <button type="button" @click="openStreamWindow(app)" class="rounded-lg btn-accent px-3 py-1.5 font-semibold">Stream App</button>
+                            <button x-show="appConnectors(app).length === 0" type="button" @click="openStreamWindow(app)" class="rounded-lg studio-subcard px-3 py-1.5 font-medium text-muted-ink hover:text-accent">Open legacy browser fallback</button>
                             <button
                               type="button"
                               @click.stop="openDuplicateAccountModal(app)"
@@ -2946,6 +2953,7 @@
                 </div>
                 <div class="studio-subcard rounded-xl p-3.5 flex flex-col justify-between gap-2">
                   <div class="text-subtle-ink uppercase text-[10px] font-semibold">Universal Browser Extension v10</div>
+                  <div class="text-[10.5px] leading-relaxed text-muted-ink">This is a separate extension from Node's New Tab / cookie sync extension. Install this package and enable it in Brave to monitor YouTube and the selected social sites.</div>
                   <div class="flex flex-wrap gap-1.5">
                     <a :href="extensionDownloadUrl" download class="rounded-lg btn-accent px-2.5 py-1.5 font-semibold">⬇ Extension (.zip)</a>
                     <a :href="userscriptDownloadUrl" target="_blank" class="rounded-lg studio-card px-2.5 py-1.5 text-ink">Userscript</a>
@@ -4343,7 +4351,7 @@
       <p class="text-muted-ink leading-relaxed">
         Creates a separate instance of <strong class="text-ink" x-text="duplicateSourceApp ? duplicateSourceApp.name : ''"></strong> with its own isolated cookie &amp; session storage so both accounts stay signed in simultaneously.
       </p>
-      <form @submit.prevent="confirmDuplicateAccount(true)" class="space-y-3">
+      <form @submit.prevent="confirmDuplicateAccount(false)" class="space-y-3">
         <div>
           <label class="block text-[11px] font-medium text-subtle-ink mb-1">Display Name</label>
           <input type="text" required x-model="duplicateAccountLabel" placeholder="ProtonMail (Personal)" class="w-full rounded-xl studio-input px-3 py-2" />

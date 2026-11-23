@@ -1392,7 +1392,7 @@ document.addEventListener("alpine:init", () => {
         this.layoutTiles(true);
         if (view === "apps" || view === "inbox" || view === "settings" || view === "grades") this.refreshCoreData(true);
         if (view === "inbox") this.loadInboxCategories();
-        if (view === "apps") this.loadAppCatalog();
+        if (view === "apps") { this.loadAppCatalog(); this.loadConnectors(); }
         if (view === "extensions") this.loadExtensions();
         if (view === "memory") { this.loadUnifiedInstructions(); this.loadSharedAgentLogs(); }
         if (view === "files") this.loadDrive(this.drivePath || "");
@@ -1414,6 +1414,7 @@ document.addEventListener("alpine:init", () => {
       this.focusWindow(winId, false);
       this.layoutTiles(true);
       if (view === "inbox") this.loadInboxCategories();
+      if (view === "apps") { this.loadAppCatalog(); this.loadConnectors(); }
       if (view === "memory") this.loadUnifiedInstructions();
       if (view === "files") this.loadDrive(this.drivePath || "");
       if (window.NodeCustomizer) {
@@ -5010,7 +5011,7 @@ document.addEventListener("alpine:init", () => {
       this.duplicateModalOpen = true;
     },
 
-    async confirmDuplicateAccount(openStreamAfter = true) {
+    async confirmDuplicateAccount(openStreamAfter = false) {
       if (!this.duplicateSourceApp) return;
       try {
         const res = await this.apiFetch(`/api/v1/apps/${encodeURIComponent(this.duplicateSourceApp.slug)}/duplicate`, {
@@ -6147,8 +6148,13 @@ document.addEventListener("alpine:init", () => {
         });
         if (Array.isArray(res?.catalog)) this.appCatalog = res.catalog;
         await this.refreshCoreData(true);
+        await this.loadConnectors();
         this.notify(`Installed ${res?.app?.name || tpl.name}`);
-        if (openStreamImmediately && res?.app) {
+        const adapters = this.appConnectors(res?.app).filter((c) => !c.experimental);
+        for (const connector of adapters) {
+          await this.runConnector(connector.key);
+        }
+        if (openStreamImmediately && res?.app && !adapters.length) {
           this.openStreamWindow(res.app);
         }
       } catch (err) {
@@ -6685,6 +6691,11 @@ document.addEventListener("alpine:init", () => {
       } catch (err) {
         this.notify(err.message || "Could not read connectors", "error");
       }
+    },
+
+    appConnectors(app) {
+      if (!app || !app.slug) return [];
+      return (this.connectors?.connectors || []).filter((c) => String(c.key || "").startsWith(`${app.slug}.`));
     },
 
     connectorHealthLabel(c) {
