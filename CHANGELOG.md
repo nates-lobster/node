@@ -5,6 +5,20 @@ line when the server needs action beyond `git pull && docker compose up -d --bui
 
 ---
 
+## 0.16.3 — 2026-11-20
+
+### Improved
+- Inbox message content opens inline beneath its title rather than in a reading
+  pane at the end of the list.
+- The new-tab extension falls back to the full dashboard if it cannot load a
+  saved mode while offline.
+
+### Changed
+- Active, incomplete tasks with a due date at least 7 days in the past are
+  removed automatically when the task list refreshes. Completed tasks remain.
+
+---
+
 ## 0.16.2 — 2026-11-20
 
 ### Fixed

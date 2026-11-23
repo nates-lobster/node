@@ -6947,11 +6947,13 @@ document.addEventListener("alpine:init", () => {
     },
 
     // ------------------------------------------------- open / read / detail
-    async openInboxItem(n) {
+    async openInboxItem(n, inline = false) {
       if (!n) return;
-      this.inboxDetailId = n.id;
-      this.inboxShowDetail = true;
+      const wasOpen = Boolean(this.expandedNotificationIds[n.id]);
+      this.inboxDetailId = wasOpen ? null : n.id;
+      this.inboxShowDetail = !inline && !wasOpen;
       this.toggleExpandNotification(n.id);
+      if (wasOpen) return;
       // Gmail behaviour: opening marks read after a short grace period so a
       // mis-click can be undone with the "Undo" toast.
       if (!n.read_state && this.osSettingsValue("inbox_mark_read_on_open", true)) {

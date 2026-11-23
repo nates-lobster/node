@@ -1,4 +1,4 @@
-# Node (v0.16.2)
+# Node (v0.16.3)
 
 Self-hosted personal desktop WebOS, zero-Google **Brave** HD 1080p server-streamed web app workspace, multi-LMS academic tracker, universal social media focus guard, custom app/widget platform, and detached server-side multi-provider AI coordinator built for Linux hosts (`max@athlon`, Docker Compose / Dockge, Tailscale, and Cloudflare Tunnel).
 
@@ -25,6 +25,17 @@ docker compose up -d --build         # http://<server>:8080
 writes lives in `data/` (SQLite DB, uploads, browser sessions, credentials). It is
 gitignored and host-mounted, so `git pull` updates the code and never touches your
 data.
+
+---
+
+## What's New in v0.16.3
+
+- Tasks overdue by at least 7 days are automatically removed from the active
+  task list when refreshed. Completed tasks are kept.
+- Clicking an Inbox item opens its content directly beneath the title instead
+  of jumping to a reading pane at the bottom.
+- The extension falls back to the full dashboard (not the minimal page) if its
+  saved mode cannot be read while the server is offline.
 
 ---
 

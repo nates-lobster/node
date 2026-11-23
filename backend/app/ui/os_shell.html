@@ -1877,7 +1877,7 @@
                     <div
                       class="group flex items-center gap-2 px-2.5 py-1.5 cursor-pointer transition-colors hover:bg-white/[0.04]"
                       :class="!grp.latest.read_state ? 'bg-white/[0.02]' : ''"
-                      @click="openInboxItem(grp.latest)"
+                      @click="openInboxItem(grp.latest, true)"
                     >
                       <input
                         type="checkbox"
@@ -1958,12 +1958,27 @@
                     <template x-if="grp.count > 1 && expandedNotificationIds[grp.latest.id]">
                       <div class="px-11 py-1.5 text-[10.5px] text-subtle-ink space-y-0.5 bg-black/20">
                         <template x-for="sub in grp.items.slice(1)" :key="'sub-' + sub.id">
-                          <div class="flex items-center gap-2 cursor-pointer hover:text-ink" @click="openInboxItem(sub)">
+                          <div class="flex items-center gap-2 cursor-pointer hover:text-ink" @click="openInboxItem(sub, true)">
                             <span class="w-24 truncate" x-text="inboxSenderLabel(sub)"></span>
                             <span class="flex-1 truncate" x-text="sub.title"></span>
                             <span class="font-mono" x-text="inboxTimeLabel(sub)"></span>
                           </div>
                         </template>
+                      </div>
+                    </template>
+
+                    <!-- Read inline beneath the selected inbox title, not at the end of the list. -->
+                    <template x-if="expandedNotificationIds[grp.latest.id] && inboxDetailId === grp.latest.id">
+                      <div class="px-11 py-3 space-y-2.5 border-t border-white/5 bg-black/20 text-xs" @click.stop>
+                        <div class="flex items-center justify-between gap-2 text-[10.5px] text-subtle-ink">
+                          <span x-text="inboxDetailItem ? (inboxDetailItem.sender || inboxDetailItem.source_app) : ''"></span>
+                          <div class="flex items-center gap-1.5">
+                            <button type="button" @click="harvestInboxBodies([grp.latest.id])" :disabled="inboxHarvesting" class="win-tool-btn" x-text="inboxHarvesting ? 'Fetching…' : 'Fetch full content'"></button>
+                            <button type="button" @click="promoteNotificationToTask(grp.latest)" class="win-tool-btn text-accent">+ Task</button>
+                            <button type="button" @click="closeInboxDetail(); expandedNotificationIds[grp.latest.id] = false" class="win-tool-btn" aria-label="Close message">✕</button>
+                          </div>
+                        </div>
+                        <div class="max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-xl bg-black/25 p-3 text-[12px] leading-relaxed text-ink/90" x-text="inboxDetailItem ? (inboxDetailItem.body_text || notificationSummaryLine(inboxDetailItem) || inboxDetailItem.message || 'No content captured yet.') : ''"></div>
                       </div>
                     </template>
                   </div>
