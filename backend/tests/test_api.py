@@ -618,6 +618,18 @@ def test_youtube_focus_guard_and_guard_token_auth(client: TestClient, unauth_cli
     assert hb_cap.status_code == 200
     assert hb_cap.json()["session"]["force_close"] is True
     assert hb_cap.json()["session"]["prompt_mode"] == "hard_block"
+    cap_justification = unauth_client.post(
+        "/api/v1/focus-guard/justify",
+        headers={"X-Node-Guard-Token": guard_tok},
+        json={
+            "reasoning": "This video is necessary for the assignment I need to finish tonight.",
+            "video_title": "Random Funny Clips",
+            "url": "https://www.youtube.com/watch?v=overcap",
+            "duration_seconds": 600,
+        },
+    )
+    assert cap_justification.status_code == 200
+    assert cap_justification.json()["justification_result"]["approved"] is False
 
     # Invalid guard token is rejected with 401
     hb_bad = unauth_client.post(
@@ -3975,3 +3987,58 @@ def test_v0162_tasks_overdue_for_a_week_are_pruned_on_refresh(client: TestClient
     assert expired["id"] not in ids
     assert recent["id"] in ids
     assert completed["id"] in ids
+
+
+def test_v0164_focus_guard_uses_decision_gate_for_video_and_task_context(client: TestClient, monkeypatch):
+    import asyncio as _asyncio
+
+    from app.decision_gate import Answer, decision_gate
+    from app.focus_guard import FocusGuardService
+
+    service = FocusGuardService()
+    monkeypatch.setattr(service, "_load", lambda: {"session": {"video_id": "video-1"}, "video_analyses": {}})
+    monkeypatch.setattr(service, "_save", lambda _state: None)
+    monkeypatch.setattr(
+        service,
+        "_gather_workload_and_schedule",
+        lambda _session: {
+            "task_titles": ["Finish linear algebra problem set"],
+            "schedule_budget": {"free_minutes_until_bedtime": 35, "due_tonight_minutes": 40},
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "_heuristic_video_analysis",
+        lambda **_kw: {"classification": "educational_general", "recommended_mode": "require_reasoning", "summary": "baseline"},
+    )
+    async def ready():
+        return True
+
+    captured = {}
+
+    async def ask(state, questions, **_kw):
+        captured["state"] = state
+        captured["questions"] = questions
+        return {
+            "classification": Answer(value="coursework_aligned", kind="choice"),
+            "recommended_mode": Answer(value="allow_aligned", kind="choice"),
+        }
+
+    monkeypatch.setattr(decision_gate, "ensure_ready", ready)
+    monkeypatch.setattr(decision_gate, "supports", lambda capability: capability == "choice")
+    monkeypatch.setattr(decision_gate, "ask", ask)
+
+    from app.database import engine
+    from sqlmodel import Session
+
+    async def run():
+        with Session(engine) as session:
+            return await service.run_background_ai_video_analysis(
+                "video-1", "MIT Linear Algebra: Orthogonal Projections", "MIT OCW", "Lecture on projections", 2400
+            )
+
+    result = _asyncio.run(run())
+    assert result["classification"] == "coursework_aligned"
+    assert result["recommended_mode"] == "allow_aligned"
+    assert "Finish linear algebra problem set" in captured["state"]["active_tasks"]
+    assert captured["questions"]["classification"]["type"] == "choice"
